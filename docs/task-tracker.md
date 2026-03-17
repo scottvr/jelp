@@ -2,20 +2,6 @@
 
 This checklist was moved out of `README.md` so status updates stay lightweight.
 
-## Phase 0: prove the concept inside `cling`
-
-### Core implementation
-
-- [x] Identify where `cling` builds its top-level `argparse.ArgumentParser`
-- [x] Add a tiny local emitter module inside `cling`
-- [x] Implement parser traversal over `ArgumentParser._actions`
-- [x] Detect and walk subcommands via `_SubParsersAction`
-- [x] Inspect `_mutually_exclusive_groups`
-- [x] Normalize parser data into an internal intermediate representation
-- [x] Emit OpenCLI-shaped JSON from the intermediate representation
-- [x] Add `--jelp` to `cling`
-- [x] Make `cling --jelp` print valid JSON and exit cleanly
-
 ### Coverage targets
 
 - [x] Top-level options
@@ -75,15 +61,15 @@ This checklist was moved out of `README.md` so status updates stay lightweight.
 - [x] Arguments
 - [x] Accepted values
 - [x] Hidden
-- [ ] Examples if available
+- [x] Examples if available
 
 ### Mappings to verify carefully
 
 - [x] Exact `nargs` -> arity mapping
-- [ ] How defaults should be represented
+- [x] How defaults should be represented
 - [x] Whether hidden/help-suppressed elements should be emitted or omitted
 - [x] Whether command aliases require any special handling
-- [ ] Whether repeatable options can be represented without custom metadata
+- [x] Whether repeatable options can be represented without custom metadata
 
 ## Synthetic fixture
 
@@ -96,14 +82,14 @@ Create and maintain a tiny deterministic parser fixture
 - [x] `scan` subcommand
 - [x] `push` subcommand
 - [x] Alias for one subcommand
-- [ ] Optional `BooleanOptionalAction`
+- [x] Optional `BooleanOptionalAction`
 
 ## Testing
 
 ### Unit tests on the synthetic fixture
 
 - [x] Root options emitted correctly
-- [ ] Root positionals emitted correctly
+- [x] Root positionals emitted correctly
 - [x] Subcommands emitted correctly
 - [x] Aliases preserved
 - [x] Choices preserved
@@ -115,28 +101,28 @@ Create and maintain a tiny deterministic parser fixture
 
 ### Manual validation questions
 
-- [ ] Can an LLM discover valid subcommands from the emitted JSON?
-- [ ] Can an LLM tell which options belong to which subcommand?
-- [ ] Can an LLM avoid mutually exclusive conflicts?
-- [ ] Can an LLM tell that `-vvv` is meaningful?
-- [ ] Can a simple wrapper generate a useful synopsis from the JSON alone?
+- [x] Can an LLM discover valid subcommands from the emitted JSON?
+- [x] Can an LLM tell which options belong to which subcommand?
+- [x] Can an LLM avoid mutually exclusive conflicts?
+- [x] Can an LLM tell that `-vvv` is meaningful?
+- [x] Can a simple wrapper generate a useful synopsis from the JSON alone?
 
 ### Public API
 
-- [ ] `enable_jelp(parser, ...)`
+- [x] `enable_jelp(parser, ...)`
 - [x] `emit_opencli(parser, ...)`
 - [x] Decide whether pretty-print mode belongs in the library or CLI
-- [ ] Decide whether schema selection belongs in v0 or later
+- [x] Decide whether schema selection belongs in v0 or later
 
 ## Potential upstream OpenCLI feedback
 
 Capture concrete examples during implementation.
 
 - [x] Need first-class mutually exclusive groups
-- [ ] Need first-class dependency / implication relationships
+- [x] Need first-class dependency / implication relationships
 - [x] Need first-class repeat-count semantics
 - [x] Need first-class repeatable additive option semantics
-- [ ] Need provenance / confidence model for inferred data
+- [x] Need provenance / confidence model for inferred data
 - [x] Need parser-action semantics where operationally meaningful
 
 ## First code artifacts to draft
@@ -146,7 +132,7 @@ Capture concrete examples during implementation.
 - [x] `NormalizedArgument` data structure
 - [x] `parser_to_normalized(parser)`
 - [x] `normalized_to_opencli(data)`
-- [ ] `handle_jelp_flag(parser, argv)` integration point
+- [x] `handle_jelp_flag(parser, argv)` integration point
 
 ## Immediate working order
 

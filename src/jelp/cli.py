@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import argparse
-import json
-import sys
 from collections.abc import Sequence
 from importlib.metadata import PackageNotFoundError, version as package_version
 
 from . import __version__
-from .argparse import emit_opencli
+from .argparse import handle_jelp_flag
 
 
 def _add_shared_command_options(parser: argparse.ArgumentParser) -> None:
@@ -79,15 +77,11 @@ def _resolved_version() -> str:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
-
-    if args.jelp or args.jelp_pretty:
-        payload = emit_opencli(parser, version=_resolved_version())
-        indent = 2 if args.jelp_pretty else None
-        json.dump(payload, sys.stdout, indent=indent)
-        sys.stdout.write("\n")
+    argv_list = list(argv) if argv is not None else None
+    if handle_jelp_flag(parser, argv_list, version=_resolved_version()):
         return 0
 
+    parser.parse_args(argv_list)
     parser.print_help()
     return 2
 

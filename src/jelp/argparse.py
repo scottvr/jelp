@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import json
+import sys
 from dataclasses import dataclass, field
+from collections.abc import Sequence
 from typing import Any
 
 
@@ -81,6 +84,7 @@ class NormalizedCommand:
     arguments: list[NormalizedArgument] = field(default_factory=list)
     commands: list[NormalizedCommand] = field(default_factory=list)
     description: str | None = None
+    examples: list[str] | None = None
     hidden: bool = False
     metadata: list[NormalizedMetadata] = field(default_factory=list)
 
@@ -101,6 +105,8 @@ class NormalizedCommand:
             payload["commands"] = [command.to_opencli() for command in self.commands]
         if self.description:
             payload["description"] = self.description
+        if self.examples:
+            payload["examples"] = self.examples
         if self.metadata:
             payload["metadata"] = [entry.to_opencli() for entry in self.metadata]
         return payload
@@ -110,6 +116,7 @@ class NormalizedCommand:
 class NormalizedDocument:
     opencli: str
     info: dict[str, str]
+    examples: list[str] | None = None
     options: list[NormalizedOption] = field(default_factory=list)
     arguments: list[NormalizedArgument] = field(default_factory=list)
     commands: list[NormalizedCommand] = field(default_factory=list)
@@ -128,6 +135,8 @@ class NormalizedDocument:
             ]
         if self.commands:
             payload["commands"] = [command.to_opencli() for command in self.commands]
+        if self.examples:
+            payload["examples"] = self.examples
         if self.metadata:
             payload["metadata"] = [entry.to_opencli() for entry in self.metadata]
         return payload
@@ -174,6 +183,7 @@ def parser_to_normalized(
     return NormalizedDocument(
         opencli=opencli_version,
         info=info,
+        examples=_parser_examples(parser),
         options=root_command.options,
         arguments=root_command.arguments,
         commands=root_command.commands,
@@ -199,6 +209,120 @@ def emit_opencli(
     return normalized_to_opencli(normalized)
 
 
+def enable_jelp(
+    parser: argparse.ArgumentParser,
+    *,
+    version: str | None = None,
+    opencli_version: str = _OPENCLI_VERSION,
+    flag: str = "--jelp",
+    pretty_flag: str = "--jelp-pretty",
+    auto_handle: bool = True,
+    help_text: str = "Emit OpenCLI JSON and exit.",
+    pretty_help_text: str = "Emit pretty OpenCLI JSON and exit.",
+) -> argparse.ArgumentParser:
+    emit_version = (
+        str(getattr(parser, "jelp_version", "0.0.0")) if version is None else version
+    )
+
+    if auto_handle:
+        action = _make_jelp_emit_action(
+            parser=parser,
+            version=emit_version,
+            opencli_version=opencli_version,
+            pretty=False,
+        )
+        pretty_action = _make_jelp_emit_action(
+            parser=parser,
+            version=emit_version,
+            opencli_version=opencli_version,
+            pretty=True,
+        )
+    else:
+        action = "store_true"
+        pretty_action = "store_true"
+
+    if flag not in parser._option_string_actions:
+        parser.add_argument(flag, action=action, help=help_text)
+    if pretty_flag not in parser._option_string_actions:
+        parser.add_argument(pretty_flag, action=pretty_action, help=pretty_help_text)
+    return parser
+
+
+def handle_jelp_flag(
+    parser: argparse.ArgumentParser,
+    argv: Sequence[str] | None = None,
+    *,
+    version: str,
+    opencli_version: str = _OPENCLI_VERSION,
+    flag: str = "--jelp",
+    pretty_flag: str = "--jelp-pretty",
+    stream: Any = None,
+) -> bool:
+    args = list(sys.argv[1:] if argv is None else argv)
+    wants_compact = flag in args
+    wants_pretty = pretty_flag in args
+    if not wants_compact and not wants_pretty:
+        return False
+    _emit_opencli_payload(
+        parser,
+        version=version,
+        opencli_version=opencli_version,
+        pretty=wants_pretty,
+        stream=stream,
+    )
+    return True
+
+
+def _make_jelp_emit_action(
+    *,
+    parser: argparse.ArgumentParser,
+    version: str,
+    opencli_version: str,
+    pretty: bool,
+) -> type[argparse.Action]:
+    class _JelpEmitAction(argparse.Action):
+        def __init__(self, option_strings: list[str], dest: str, **kwargs: Any) -> None:
+            kwargs.setdefault("nargs", 0)
+            super().__init__(option_strings, dest, **kwargs)
+
+        def __call__(
+            self,
+            _: argparse.ArgumentParser,
+            namespace: argparse.Namespace,
+            values: Any,
+            option_string: str | None = None,
+        ) -> None:
+            del namespace, values, option_string
+            _emit_opencli_payload(
+                parser,
+                version=version,
+                opencli_version=opencli_version,
+                pretty=pretty,
+                stream=None,
+            )
+            parser.exit(0)
+
+    return _JelpEmitAction
+
+
+def _emit_opencli_payload(
+    parser: argparse.ArgumentParser,
+    *,
+    version: str,
+    opencli_version: str,
+    pretty: bool,
+    stream: Any = None,
+) -> None:
+    payload = emit_opencli(
+        parser,
+        version=version,
+        opencli_version=opencli_version,
+    )
+    target = sys.stdout if stream is None else stream
+    json.dump(payload, target, indent=2 if pretty else None)
+    target.write("\n")
+
+
 def _parser_to_normalized_command(
     parser: argparse.ArgumentParser,
     *,
@@ -216,6 +340,7 @@ def _parser_to_normalized_command(
         name=name,
         aliases=aliases,
         description=description_override,
+        examples=_parser_examples(parser),
         hidden=hidden_override,
     )
 
@@ -495,13 +620,24 @@ def _nargs_to_arity(nargs: Any) -> dict[str, int] | None:
     return None
 
 
+def _parser_examples(parser: argparse.ArgumentParser) -> list[str] | None:
+    examples = getattr(parser, "jelp_examples", None)
+    if examples is None:
+        return None
+    if isinstance(examples, str):
+        return [examples]
+    return [str(example) for example in examples]
+
+
 __all__ = [
     "NormalizedArgument",
     "NormalizedCommand",
     "NormalizedDocument",
     "NormalizedMetadata",
     "NormalizedOption",
+    "enable_jelp",
     "emit_opencli",
+    "handle_jelp_flag",
     "normalized_to_opencli",
     "parser_to_normalized",
 ]

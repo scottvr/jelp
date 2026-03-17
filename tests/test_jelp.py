@@ -6,7 +6,7 @@ from io import StringIO
 from pathlib import Path
 
 from jelp.cli import build_parser, main as cli_main
-from jelp import emit_opencli, parser_to_normalized
+from jelp import emit_opencli, enable_jelp, handle_jelp_flag, parser_to_normalized
 
 try:
     from jsonschema import validate
@@ -17,12 +17,21 @@ except ImportError:  # pragma: no cover - dependency gate
 class JelpTests(unittest.TestCase):
     def _fixture_parser(self) -> argparse.ArgumentParser:
         parser = argparse.ArgumentParser(prog="fixture", description="Fixture CLI")
+        parser.jelp_examples = ["fixture --format json scan /tmp"]  # type: ignore[attr-defined]
         parser.add_argument(
             "-v", "--verbose", action="count", default=0, help="Increase verbosity."
         )
         parser.add_argument("--format", choices=["json", "text"], help="Output format.")
         parser.add_argument("--tag", action="append", default=[], help="Attach tags.")
+        parser.add_argument("root_path", nargs="?", help="Optional root path.")
         parser.add_argument("--secret", help=argparse.SUPPRESS)
+        if hasattr(argparse, "BooleanOptionalAction"):
+            parser.add_argument(
+                "--color",
+                action=argparse.BooleanOptionalAction,
+                default=True,
+                help="Color output.",
+            )
 
         mode = parser.add_mutually_exclusive_group(required=True)
         mode.add_argument("--dry-run", action="store_true", help="Dry run mode.")
@@ -73,6 +82,7 @@ class JelpTests(unittest.TestCase):
         self.assertEqual(normalized.opencli, "0.1.0")
         self.assertEqual(normalized.info["title"], "fixture")
         self.assertEqual(normalized.info["version"], "9.9.9")
+        self.assertEqual(normalized.examples, ["fixture --format json scan /tmp"])
 
         options_by_name = {option.name: option for option in normalized.options}
         self.assertIn("--verbose", options_by_name)
@@ -100,6 +110,14 @@ class JelpTests(unittest.TestCase):
         )
         self.assertEqual(fmt["arguments"][0]["acceptedValues"], ["json", "text"])
         self.assertTrue(secret["hidden"])
+        self.assertIn("root_path", [argument.name for argument in normalized.arguments])
+        if "--color" in options_by_name:
+            color = options_by_name["--color"].to_opencli()
+            self.assertEqual(
+                self._metadata_value(color["metadata"], "argparse.action"),
+                "boolean_optional",
+            )
+            self.assertIn("--no-color", color["aliases"])
 
         root_metadata = [entry.to_opencli() for entry in normalized.metadata]
         mxg = self._metadata_value(root_metadata, "argparse.mutually_exclusive_groups")
@@ -242,6 +260,76 @@ class JelpTests(unittest.TestCase):
                 },
             },
         )
+
+    def test_handle_and_enable_jelp_integration_helpers(self) -> None:
+        parser = argparse.ArgumentParser(prog="mini")
+        parser.add_argument("--value")
+        enable_jelp(parser, version="0.0.1")
+
+        auto_stdout = StringIO()
+        with redirect_stdout(auto_stdout):
+            with self.assertRaises(SystemExit) as exit_ctx:
+                parser.parse_args(["--jelp"])
+        self.assertEqual(exit_ctx.exception.code, 0)
+        auto_payload = json.loads(auto_stdout.getvalue())
+        self.assertEqual(auto_payload["info"]["version"], "0.0.1")
+
+        parser_manual = argparse.ArgumentParser(prog="mini-manual")
+        parser_manual.add_argument("--value")
+        enable_jelp(parser_manual, auto_handle=False)
+
+        compact = StringIO()
+        handled_compact = handle_jelp_flag(
+            parser_manual,
+            ["--jelp"],
+            version="0.0.1",
+            stream=compact,
+        )
+        self.assertTrue(handled_compact)
+        self.assertFalse(compact.getvalue().startswith("{\n"))
+
+        pretty = StringIO()
+        handled_pretty = handle_jelp_flag(
+            parser_manual,
+            ["--jelp-pretty"],
+            version="0.0.1",
+            stream=pretty,
+        )
+        self.assertTrue(handled_pretty)
+        self.assertTrue(pretty.getvalue().startswith("{\n"))
+
+        not_handled = handle_jelp_flag(
+            parser_manual,
+            ["--value", "x"],
+            version="0.0.1",
+        )
+        self.assertFalse(not_handled)
+
+    def test_emitted_json_answers_llm_discovery_questions(self) -> None:
+        payload = emit_opencli(self._fixture_parser(), version="1.2.3")
+        command_names = [command["name"] for command in payload.get("commands", [])]
+        self.assertEqual(command_names, ["scan", "push"])
+
+        options_by_command = {
+            command["name"]: [option["name"] for option in command.get("options", [])]
+            for command in payload.get("commands", [])
+        }
+        self.assertEqual(options_by_command["push"], ["--help", "--force"])
+
+        root_options = {option["name"]: option for option in payload.get("options", [])}
+        verbose = root_options["--verbose"]
+        verbose_metadata = verbose.get("metadata", [])
+        self.assertEqual(
+            self._metadata_value(verbose_metadata, "argparse.repeat_semantics"),
+            "count",
+        )
+
+        root_metadata = payload.get("metadata", [])
+        mxg = self._metadata_value(root_metadata, "argparse.mutually_exclusive_groups")
+        self.assertEqual(mxg[0]["members"], ["--dry-run", "--execute"])
+
+        synopsis = "commands: " + ", ".join(command_names)
+        self.assertEqual(synopsis, "commands: scan, push")
 
 
 if __name__ == "__main__":
