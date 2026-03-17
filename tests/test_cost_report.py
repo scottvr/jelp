@@ -66,7 +66,9 @@ class CostReportTests(unittest.TestCase):
         # gpt-4.1-mini default: input=0.40, output=1.60 per 1M
         self.assertAlmostEqual(payload["totals"]["estimated_cost_usd"], 2.0, places=6)
         self.assertIn("estimated_cost=$2.0000", text)
-        self.assertIn("for 3 iterations of same config: estimated_total_cost=$6.0000", text)
+        self.assertIn(
+            "for 3 iterations of same config: estimated_total_cost=$6.0000", text
+        )
 
     def test_summary_zero_backfills_from_model_usage(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -82,8 +84,16 @@ class CostReportTests(unittest.TestCase):
                         output_tokens=0,
                         total_tokens=0,
                         model_usage=[
-                            {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150},
-                            {"input_tokens": 300, "output_tokens": 25, "total_tokens": 325},
+                            {
+                                "input_tokens": 100,
+                                "output_tokens": 50,
+                                "total_tokens": 150,
+                            },
+                            {
+                                "input_tokens": 300,
+                                "output_tokens": 25,
+                                "total_tokens": 325,
+                            },
                         ],
                     )
                 ],
@@ -103,9 +113,13 @@ class CostReportTests(unittest.TestCase):
         self.assertGreater(payload["totals"]["estimated_cost_usd"], 0)
 
     def test_model_alias_normalization_snapshot(self) -> None:
-        self.assertEqual(cr._normalize_model_name("gpt-5-mini-2025-08-07"), "gpt-5-mini")
+        self.assertEqual(
+            cr._normalize_model_name("gpt-5-mini-2025-08-07"), "gpt-5-mini"
+        )
         self.assertEqual(cr._normalize_model_name("gpt-5-2025-08-07"), "gpt-5")
-        self.assertEqual(cr._normalize_model_name("unknown-2025-08-07"), "unknown-2025-08-07")
+        self.assertEqual(
+            cr._normalize_model_name("unknown-2025-08-07"), "unknown-2025-08-07"
+        )
 
     def test_unknown_model_is_reported_and_cost_omitted(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

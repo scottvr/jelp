@@ -119,7 +119,9 @@ def _load_pricing_map(
             input_per_1m=float(spec["input"]),
             output_per_1m=float(spec["output"]),
             cached_input_per_1m=(
-                None if spec.get("cached_input") is None else float(spec["cached_input"])
+                None
+                if spec.get("cached_input") is None
+                else float(spec["cached_input"])
             ),
         )
     return out
@@ -171,17 +173,13 @@ def _estimate_cost_usd(
     uncached_input_tokens = input_tokens - cached_input_tokens
 
     if pricing.cached_input_per_1m is None:
-        cached_input_cost = (
-            cached_input_tokens / 1_000_000.0 * pricing.input_per_1m
-        )
+        cached_input_cost = cached_input_tokens / 1_000_000.0 * pricing.input_per_1m
     else:
         cached_input_cost = (
             cached_input_tokens / 1_000_000.0 * pricing.cached_input_per_1m
         )
 
-    uncached_input_cost = (
-        uncached_input_tokens / 1_000_000.0 * pricing.input_per_1m
-    )
+    uncached_input_cost = uncached_input_tokens / 1_000_000.0 * pricing.input_per_1m
     output_cost = output_tokens / 1_000_000.0 * pricing.output_per_1m
     return uncached_input_cost + cached_input_cost + output_cost
 
