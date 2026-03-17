@@ -4,8 +4,13 @@ MAX_STEPS=12
 export MAX_STEPS
 
 # optional, to run anything less thann the full fixture suits
-#export SUBSET="--scenario fixture01_vault"
+# export SUBSET="--scenario fixture01_vault"
 MODES="--modes help-only help-only-primed jelp-primed-useful jelp-primed-incremental jelp-primed-full"
+
+# quick hack for adding SUB to logfiles. I should probably just timesstamp the logfiles and add a header row for the metadata for quick grepping/heading of logfiles to find relevant ones.
+SUBN=$(echo ${SUBSET} | awk '{ print $NF }')
+
+
 export MODES
 
 
@@ -15,7 +20,10 @@ export DEBUG="--debug"
 MODEL="gpt-4.1-mini"
 export MODEL
 
-PYTHONPATH=src:. .venv/bin/python ctf/harness.py ${DEBUG} --adapter openai --model gpt-4.1-mini --modes jelp-primed-incremental jelp-primed-full --iterations 3 --temperature 0.1 --max-steps ${MAX_STEPS}  --api-timeout-s 45 --response-max-output-tokens 1200 --adapter-retries 1 --out ctf/results/openai-gpt-4.1-mini-primed-modes-temp0.1_maxsteps-${MAX_STEPS}_${ITERATIONS}runs.json --iterations  ${ITERATIONS}
+TEMPERATURE="0.2"
+export TEMPERATURE
+
+PYTHONPATH=src:. .venv/bin/python ctf/harness.py ${DEBUG} --adapter openai --model gpt-4.1-mini --modes jelp-primed-incremental jelp-primed-full --iterations 3 --temperature ${TEMPERATURE}  --max-steps ${MAX_STEPS}  --api-timeout-s 45 --response-max-output-tokens 1200 --adapter-retries 1 --out ctf/results/openai-gpt-4.1-mini-temp-${TEMPERATURE}-primed-modes-${SUBN}-steps-${MAX_STEPS}_${ITERATIONS}runs.json --iterations  ${ITERATIONS} ${MODES} ${SUBSET}
 
 #PYTHONPATH=src:. .venv/bin/python ctf/harness.py --adapter openai --model ${MODEL} --debug --api-timeout-s 45 --response-max-output-tokens 500 --adapter-retries 1 --temperature 0.1 --iterations $ITERATIONS --out ctf/results/openai-${MODEL}-temperature_0.1-${ITERATIONS}runs.json  --max-steps 12 ${MODES} ${SUBSET}
 

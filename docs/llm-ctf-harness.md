@@ -182,3 +182,22 @@ PYTHONPATH=src:. .venv/bin/python ctf/report.py \
   --compare jelp-no-meta \
   --compare jelp-all
 ```
+
+## Decision report (cost-adjusted)
+
+For pre-registered decision analysis across one or more run logs:
+
+```bash
+PYTHONPATH=src:. .venv/bin/python ctf/decision_report.py \
+  --in ctf/results/confirmatory-gpt-4.1-mini.json \
+  --in ctf/results/confirmatory-gpt-5-mini.json \
+  --baseline help-only-primed \
+  --candidate jelp-primed-useful \
+  --ci-level 0.90 \
+  --bootstrap-samples 4000 \
+  --seed 42 \
+  --json-out ctf/results/confirmatory-decision.json \
+  --md-out ctf/results/confirmatory-decision.md
+```
+
+See `docs/opencli-decision-protocol.md` for locked thresholds and evidence rules.
