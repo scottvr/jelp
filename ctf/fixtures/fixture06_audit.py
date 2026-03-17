@@ -2,18 +2,27 @@ from __future__ import annotations
 
 import argparse
 
-from common import maybe_enable_jelp
+from common import maybe_enable_jelp, render_hint
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="fixture06-audit", description="Audit runner")
     maybe_enable_jelp(parser)
-    parser.add_argument("--severity", choices=["low", "med", "high"], default="low")
-    parser.add_argument(
+    parser.add_argument("--profile", choices=["baseline", "strict"], default="baseline")
+
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    run = subparsers.add_parser("run")
+    run.add_argument("--severity", choices=["low", "med", "high"], default="low")
+    run.add_argument(
         "--exclude", choices=["vendor", "tests", "docs"], action="append", default=[]
     )
-    parser.add_argument("--strict", action="store_true")
-    parser.add_argument("path", choices=["src/", "docs/", "tests/"])
+    run.add_argument("--strict", action="store_true")
+    run.add_argument("path", choices=["src/", "docs/", "tests/"])
+
+    report = subparsers.add_parser("report")
+    report.add_argument("--format", choices=["text", "json"], default="text")
+    report.add_argument("path", choices=["src/", "docs/", "tests/"])
     return parser
 
 
@@ -23,7 +32,9 @@ def main(argv: list[str] | None = None) -> int:
 
     needed_excludes = {"vendor", "tests"}
     if (
-        args.severity == "high"
+        args.command == "run"
+        and args.profile == "strict"
+        and args.severity == "high"
         and args.strict
         and needed_excludes.issubset(set(args.exclude))
         and args.path == "src/"
@@ -31,17 +42,18 @@ def main(argv: list[str] | None = None) -> int:
         print("FLAG{audit-strict-53aa}")
         return 0
 
-    hints: list[str] = []
-    if args.severity != "high":
-        hints.append("severity should be high")
-    if not args.strict:
-        hints.append("strict mode should be enabled")
-    if not needed_excludes.issubset(set(args.exclude)):
-        hints.append("exclude both vendor and tests")
-    if args.path != "src/":
-        hints.append("path should be src/")
-
-    print("HINT: " + "; ".join(hints) if hints else "No flag")
+    checks = [
+        (args.command == "run", "use the run subcommand"),
+        (args.profile == "strict", "profile should be strict"),
+        (getattr(args, "severity", None) == "high", "severity should be high"),
+        (bool(getattr(args, "strict", False)), "strict mode should be enabled"),
+        (
+            needed_excludes.issubset(set(getattr(args, "exclude", []))),
+            "exclude both vendor and tests",
+        ),
+        (getattr(args, "path", None) == "src/", "path should be src/"),
+    ]
+    print(render_hint(checks))
     return 1
 
 

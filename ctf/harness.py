@@ -19,6 +19,14 @@ from ctf.scenarios import SCENARIOS, Scenario, fixture_dir
 FLAG_RE = re.compile(r"FLAG\{[^}]+\}")
 
 
+def _usage_int(value: object) -> int:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    return 0
+
+
 @dataclass
 class RunResult:
     scenario_id: str
@@ -32,6 +40,10 @@ class RunResult:
     parser_error_count: int
     duration_s: float
     time_to_success_s: float | None
+    api_call_count: int
+    model_input_tokens: int
+    model_output_tokens: int
+    model_total_tokens: int
 
 
 def _policy_violation(mode: str, command: str) -> str | None:
@@ -44,24 +56,84 @@ def _policy_violation(mode: str, command: str) -> str | None:
         "--jelp-all-commands",
         "--jelp-all-no-meta",
     }
+    help_tokens = {"-h", "--help"}
 
-    if mode == "help-only" and any(token in jelp_tokens for token in tokens):
+    if mode in {"help-only", "help-only-primed"} and any(
+        token in jelp_tokens for token in tokens
+    ):
         return "jelp flags disallowed in help-only mode"
 
-    if mode == "jelp-useful" and any(
+    if mode in {"jelp-useful", "jelp-primed"} and any(
         token in {"--jelp-no-meta", "--jelp-all", "--jelp-all-no-meta"}
         for token in tokens
     ):
-        return (
-            "only --jelp/--jelp-pretty/--jelp-all-commands allowed in jelp-useful mode"
-        )
+        return "only --jelp/--jelp-pretty/--jelp-all-commands allowed in jelp-useful/jelp-primed modes"
 
     if mode == "jelp-no-meta" and any(
-        token in {"--jelp", "--jelp-pretty", "--jelp-all"} for token in tokens
+        token in {"--jelp", "--jelp-pretty", "--jelp-all", "--jelp-all-commands"}
+        for token in tokens
     ):
-        return "only --jelp-no-meta/--jelp-all-no-meta/--jelp-all-commands allowed in jelp-no-meta mode"
+        return "only --jelp-no-meta/--jelp-all-no-meta allowed in jelp-no-meta mode"
+
+    if mode == "jelp-primed-incremental":
+        if any(token in help_tokens for token in tokens):
+            return "--help is disallowed in jelp-primed-incremental mode; use --jelp traversal"
+        if any(
+            token
+            in {
+                "--jelp-no-meta",
+                "--jelp-all",
+                "--jelp-all-commands",
+                "--jelp-all-no-meta",
+            }
+            for token in tokens
+        ):
+            return "only --jelp/--jelp-pretty allowed in jelp-primed-incremental mode"
+
+    if mode == "jelp-primed-useful":
+        if any(token in help_tokens for token in tokens):
+            return "--help is disallowed in jelp-primed-useful mode; use --jelp"
+        if any(
+            token
+            in {
+                "--jelp-pretty",
+                "--jelp-no-meta",
+                "--jelp-all",
+                "--jelp-all-commands",
+                "--jelp-all-no-meta",
+            }
+            for token in tokens
+        ):
+            return "only --jelp allowed in jelp-primed-useful mode"
+
+    if mode == "jelp-primed-full":
+        if any(token in help_tokens for token in tokens):
+            return (
+                "--help is disallowed in jelp-primed-full mode; use --jelp-all-commands"
+            )
+        if any(
+            token
+            in {
+                "--jelp",
+                "--jelp-pretty",
+                "--jelp-no-meta",
+                "--jelp-all",
+                "--jelp-all-no-meta",
+            }
+            for token in tokens
+        ):
+            return "only --jelp-all-commands allowed in jelp-primed-full mode"
 
     return None
+
+
+def _is_non_penalized_jelp_probe(mode: str, command: str, violation: str) -> bool:
+    if mode != "help-only-primed":
+        return False
+    if "jelp flags disallowed" not in violation:
+        return False
+    tokens = shlex.split(command)
+    return any(token.startswith("--jelp") for token in tokens)
 
 
 def _execute_command(
@@ -103,7 +175,22 @@ def _run_single(
     response_max_output_tokens: int,
     adapter_retries: int,
     reject_duplicates: bool,
-) -> tuple[RunResult, list[TurnRecord]]:
+) -> tuple[RunResult, list[TurnRecord], list[str]]:
+    debug_events: list[str] = []
+    model_usage_events: list[dict[str, object]] = []
+
+    def _record_debug_event(message: str) -> None:
+        if debug:
+            debug_events.append(message)
+
+    def _emit_debug(message: str) -> None:
+        if debug:
+            print(message, flush=True)
+            _record_debug_event(message)
+
+    def _record_usage_event(event: dict[str, object]) -> None:
+        model_usage_events.append(event)
+
     adapter = build_adapter(
         adapter_name,
         model=model,
@@ -112,6 +199,8 @@ def _run_single(
         temperature=temperature,
         max_output_tokens=response_max_output_tokens,
         retries=adapter_retries,
+        debug_sink=_record_debug_event if debug else None,
+        usage_sink=_record_usage_event if adapter_name == "openai" else None,
     )
     turns: list[TurnRecord] = []
     invalid = 0
@@ -120,6 +209,8 @@ def _run_single(
     t0 = time.perf_counter()
     success_time: float | None = None
     seen_commands: set[str] = set()
+    counted_steps = 0
+    free_probe_rejections = 0
 
     fixtures = fixture_dir(repo_root)
     allowed_prefix = f"python {scenario.script}"
@@ -128,12 +219,9 @@ def _run_single(
     env["PYTHONPATH"] = str(repo_root / "src")
     env["JELP_MODE"] = mode
 
-    for step in range(1, max_steps + 1):
-        if debug:
-            print(
-                f"[debug] scenario={scenario.id} mode={mode} step={step}",
-                flush=True,
-            )
+    while counted_steps < max_steps:
+        step = counted_steps + 1
+        _emit_debug(f"[debug] scenario={scenario.id} mode={mode} step={step}")
         command = adapter.next_command(
             scenario=scenario,
             mode=mode,
@@ -142,14 +230,11 @@ def _run_single(
         ).strip()
 
         if not command:
-            if debug:
-                print(
-                    "[debug] adapter returned empty command; stopping scenario loop",
-                    flush=True,
-                )
+            _emit_debug(
+                "[debug] adapter returned empty command; stopping scenario loop"
+            )
             break
-        if debug:
-            print(f"[debug] command: {command}", flush=True)
+        _emit_debug(f"[debug] command: {command}")
 
         if reject_duplicates and command in seen_commands:
             invalid += 1
@@ -161,8 +246,8 @@ def _run_single(
                     stderr="Rejected: duplicate command (already attempted).",
                 )
             )
-            if debug:
-                print("[debug] rejected command: duplicate", flush=True)
+            _emit_debug("[debug] rejected command: duplicate")
+            counted_steps += 1
             continue
         seen_commands.add(command)
 
@@ -176,8 +261,8 @@ def _run_single(
                     stderr="Rejected: command must start with 'python '",
                 )
             )
-            if debug:
-                print("[debug] rejected command: must start with python", flush=True)
+            _emit_debug("[debug] rejected command: must start with python")
+            counted_steps += 1
             continue
 
         violation = _policy_violation(mode, command)
@@ -191,18 +276,29 @@ def _run_single(
                     stderr=f"Rejected: {violation}",
                 )
             )
-            if debug:
-                print(f"[debug] policy violation: {violation}", flush=True)
+            _emit_debug(f"[debug] policy violation: {violation}")
+            if _is_non_penalized_jelp_probe(mode, command, violation):
+                free_probe_rejections += 1
+                _emit_debug(
+                    "[debug] non-penalized jelp probe rejected; step budget unchanged"
+                )
+                if free_probe_rejections >= max_steps:
+                    _emit_debug(
+                        "[debug] too many non-penalized probe rejections; stopping scenario loop"
+                    )
+                    break
+                continue
+            counted_steps += 1
             continue
 
         turn = _execute_command(command, cwd=fixtures, env=env, timeout_s=timeout_s)
         turns.append(turn)
-        if debug:
-            print(f"[debug] exit={turn.returncode}", flush=True)
-            if turn.stdout:
-                print(f"[debug] stdout:\n{turn.stdout[:1500]}", flush=True)
-            if turn.stderr:
-                print(f"[debug] stderr:\n{turn.stderr[:1500]}", flush=True)
+        counted_steps += 1
+        _emit_debug(f"[debug] exit={turn.returncode}")
+        if turn.stdout:
+            _emit_debug(f"[debug] stdout:\n{turn.stdout[:1500]}")
+        if turn.stderr:
+            _emit_debug(f"[debug] stderr:\n{turn.stderr[:1500]}")
 
         if "error:" in (turn.stdout + turn.stderr):
             parser_errors += 1
@@ -216,6 +312,15 @@ def _run_single(
 
     duration = time.perf_counter() - t0
     success = matched_flag == scenario.expected_flag
+    model_input_tokens = sum(
+        _usage_int(event.get("input_tokens")) for event in model_usage_events
+    )
+    model_output_tokens = sum(
+        _usage_int(event.get("output_tokens")) for event in model_usage_events
+    )
+    model_total_tokens = sum(
+        _usage_int(event.get("total_tokens")) for event in model_usage_events
+    )
 
     result = RunResult(
         scenario_id=scenario.id,
@@ -224,13 +329,17 @@ def _run_single(
         success=success,
         matched_flag=matched_flag,
         expected_flag=scenario.expected_flag,
-        command_count=len(turns),
+        command_count=counted_steps,
         invalid_command_count=invalid,
         parser_error_count=parser_errors,
         duration_s=round(duration, 3),
         time_to_success_s=round(success_time, 3) if success_time is not None else None,
+        api_call_count=len(model_usage_events),
+        model_input_tokens=model_input_tokens,
+        model_output_tokens=model_output_tokens,
+        model_total_tokens=model_total_tokens,
     )
-    return result, turns
+    return result, turns, debug_events, model_usage_events
 
 
 def _print_summary(results: list[RunResult]) -> None:
@@ -285,15 +394,52 @@ def _print_summary(results: list[RunResult]) -> None:
             + str(med_t_success)
         )
 
+    if any(result.api_call_count > 0 for result in results):
+        print("\nModel token totals (by mode)")
+        print(
+            "mode".ljust(16)
+            + " api_calls".ljust(12)
+            + " input_tok".ljust(12)
+            + " output_tok".ljust(12)
+            + " total_tok"
+        )
+        print("-" * 64)
+        by_mode_tokens: dict[str, dict[str, int]] = {}
+        for result in results:
+            bucket = by_mode_tokens.setdefault(
+                result.mode,
+                {
+                    "api_calls": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 0,
+                },
+            )
+            bucket["api_calls"] += result.api_call_count
+            bucket["input_tokens"] += result.model_input_tokens
+            bucket["output_tokens"] += result.model_output_tokens
+            bucket["total_tokens"] += result.model_total_tokens
+        for mode, bucket in by_mode_tokens.items():
+            print(
+                mode.ljust(16)
+                + str(bucket["api_calls"]).ljust(12)
+                + str(bucket["input_tokens"]).ljust(12)
+                + str(bucket["output_tokens"]).ljust(12)
+                + str(bucket["total_tokens"])
+            )
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ctf-harness")
     parser.add_argument("--adapter", choices=["oracle", "openai"], default="oracle")
     parser.add_argument("--model", default="gpt-4.1-mini")
     parser.add_argument(
-        "--modes", nargs="+", default=["help-only", "jelp-useful", "jelp-no-meta"]
+        "--modes",
+        nargs="+",
+        default=["help-only", "jelp-useful", "jelp-primed", "jelp-no-meta"],
     )
     parser.add_argument("--max-steps", type=int, default=12)
+    parser.add_argument("--iterations", type=int, default=1)
     parser.add_argument("--timeout-s", type=float, default=8.0)
     parser.add_argument("--api-timeout-s", type=float, default=45.0)
     parser.add_argument("--temperature", type=float, default=None)
@@ -304,6 +450,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--scenario", action="append", default=[])
     parser.add_argument("--out", default="ctf/results/latest.json")
     args = parser.parse_args(argv)
+    if args.iterations < 1:
+        parser.error("--iterations must be >= 1")
 
     repo_root = Path(__file__).resolve().parents[1]
     selected = [s for s in SCENARIOS if not args.scenario or s.id in set(args.scenario)]
@@ -314,33 +462,43 @@ def main(argv: list[str] | None = None) -> int:
         "adapter": args.adapter,
         "model": args.model,
         "modes": args.modes,
+        "iterations": args.iterations,
         "results": [],
     }
 
-    for scenario in selected:
-        for mode in args.modes:
-            result, turns = _run_single(
-                scenario=scenario,
-                mode=mode,
-                adapter_name=args.adapter,
-                model=args.model,
-                max_steps=args.max_steps,
-                timeout_s=args.timeout_s,
-                repo_root=repo_root,
-                debug=args.debug,
-                api_timeout_s=args.api_timeout_s,
-                temperature=args.temperature,
-                response_max_output_tokens=args.response_max_output_tokens,
-                adapter_retries=args.adapter_retries,
-                reject_duplicates=not args.allow_duplicates,
+    for iteration in range(1, args.iterations + 1):
+        if args.debug:
+            print(
+                f"[debug] starting iteration {iteration}/{args.iterations}",
+                flush=True,
             )
-            all_results.append(result)
-            run_log["results"].append(
-                {
-                    "summary": asdict(result),
-                    "turns": [asdict(turn) for turn in turns],
-                }
-            )
+        for scenario in selected:
+            for mode in args.modes:
+                result, turns, debug_events, model_usage_events = _run_single(
+                    scenario=scenario,
+                    mode=mode,
+                    adapter_name=args.adapter,
+                    model=args.model,
+                    max_steps=args.max_steps,
+                    timeout_s=args.timeout_s,
+                    repo_root=repo_root,
+                    debug=args.debug,
+                    api_timeout_s=args.api_timeout_s,
+                    temperature=args.temperature,
+                    response_max_output_tokens=args.response_max_output_tokens,
+                    adapter_retries=args.adapter_retries,
+                    reject_duplicates=not args.allow_duplicates,
+                )
+                all_results.append(result)
+                run_log["results"].append(
+                    {
+                        "iteration": iteration,
+                        "summary": asdict(result),
+                        "turns": [asdict(turn) for turn in turns],
+                        "debug_events": debug_events,
+                        "model_usage": model_usage_events,
+                    }
+                )
 
     _print_summary(all_results)
 

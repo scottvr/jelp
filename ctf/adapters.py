@@ -3,10 +3,14 @@ from __future__ import annotations
 import json
 import re
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
 from ctf.scenarios import Scenario
+
+_DEFAULT_HISTORY_CHARS = 1400
+_JELP_HISTORY_CHARS = 20000
 
 
 @dataclass(frozen=True)
@@ -53,6 +57,8 @@ class OpenAIAdapter:
         temperature: float | None = None,
         max_output_tokens: int = 500,
         retries: int = 1,
+        debug_sink: Callable[[str], None] | None = None,
+        usage_sink: Callable[[dict[str, object]], None] | None = None,
     ) -> None:
         try:
             from openai import OpenAI
@@ -67,6 +73,8 @@ class OpenAIAdapter:
         self._temperature = temperature
         self._max_output_tokens = max_output_tokens
         self._retries = retries
+        self._debug_sink = debug_sink
+        self._usage_sink = usage_sink
 
     def next_command(
         self,
@@ -78,12 +86,40 @@ class OpenAIAdapter:
     ) -> str:
         history_lines: list[str] = []
         for idx, turn in enumerate(turns, start=1):
+            history_chars = (
+                _JELP_HISTORY_CHARS
+                if "--jelp" in turn.command
+                else _DEFAULT_HISTORY_CHARS
+            )
             history_lines.append(
                 f"Step {idx}\\n"
                 f"command: {turn.command}\\n"
                 f"exit: {turn.returncode}\\n"
-                f"stdout:\\n{turn.stdout[:1400]}\\n"
-                f"stderr:\\n{turn.stderr[:1400]}"
+                f"stdout:\\n{turn.stdout[:history_chars]}\\n"
+                f"stderr:\\n{turn.stderr[:history_chars]}"
+            )
+
+        primer = ""
+        if mode in {
+            "jelp-primed",
+            "jelp-primed-useful",
+            "jelp-primed-incremental",
+            "jelp-primed-full",
+        }:
+            primer = (
+                "OpenCLI primer:\\n"
+                "- OpenCLI JSON is a machine-readable schema of commands, options, arguments, arity, and accepted values.\\n"
+                "- In this benchmark, every fixture app uses argparse and `--jelp*` emits OpenCLI schema from argparse objects.\\n"
+                "- Simple argparse heuristic: metadata keys that start with `argparse.` indicate parser-derived fields.\\n"
+                "- Executable CLI tokens come from commands/options/arguments fields, not metadata keys.\\n"
+                "- Prefer reading that schema over trial-and-error command guessing when available.\\n"
+            )
+        elif mode == "help-only-primed":
+            primer = (
+                "OpenCLI primer:\\n"
+                "- Many CLIs expose machine-readable OpenCLI-like schema via `--jelp*`, emitted from argparse.\\n"
+                "- In this mode, `--jelp*` is intentionally disabled as an experimental control.\\n"
+                "- Use standard `--help` and subcommand help traversal to discover the interface.\\n"
             )
 
         content = (
@@ -94,13 +130,22 @@ class OpenAIAdapter:
             f"Mode: {mode}\\n"
             f"Allowed command prefix: {allowed_prefix}\\n"
             "Use shell commands to discover and execute the correct invocation.\\n"
-            "Strategy requirements:\\n"
-            "- Start by inspecting interface shape (`--help`, and `--jelp` when available in this mode).\\n"
-            "- Do NOT repeat an identical command that already failed.\\n"
-            "- If argparse reports unrecognized arguments, adjust option placement based on usage.\\n"
-            "- Change one parameter at a time after a near miss.\\n"
-            "If finished or blocked, return command as empty string.\\n\\n"
-            "History:\\n"
+            + primer
+            + "Strategy requirements:\\n"
+            + "- Start by inspecting interface shape (`--help`, and `--jelp` when available in this mode).\\n"
+            + "- Prefer compact `--jelp` output over `--jelp-pretty` unless readability is absolutely necessary.\\n"
+            + "- In `jelp-useful`, prefer `--jelp-all-commands` early to inspect the full command tree in one step.\\n"
+            + "- In `jelp-no-meta`, prefer `--jelp-all-no-meta` early for full-tree output without metadata.\\n"
+            + "- In `jelp-primed`, explicitly prioritize `--jelp-all-commands` first unless denied by parser output.\\n"
+            + "- In `jelp-primed-useful`, use compact `--jelp` only (no pretty/all variants).\\n"
+            + "- In `jelp-primed-incremental`, use `--jelp` traversal only (`--help` is disabled).\\n"
+            + "- In `jelp-primed-full`, use a single `--jelp-all-commands` read first, then execute.\\n"
+            + "- In `help-only-primed`, do not rely on `--jelp*`; use `--help` traversal only.\\n"
+            + "- Do NOT repeat an identical command that already failed.\\n"
+            + "- If argparse reports unrecognized arguments, adjust option placement based on usage.\\n"
+            + "- Change one parameter at a time after a near miss.\\n"
+            + "If finished or blocked, return command as empty string.\\n\\n"
+            + "History:\\n"
             + ("\\n\\n".join(history_lines) if history_lines else "(none)")
         )
 
@@ -131,34 +176,37 @@ class OpenAIAdapter:
             if self._temperature is not None:
                 request_kwargs["temperature"] = self._temperature
 
-            if self._debug:
-                print(
-                    f"[debug][openai] requesting model={self._model} timeout={self._api_timeout_s}s attempt={attempt + 1}",
-                    flush=True,
-                )
+            self._emit_debug(
+                f"[debug][openai] requesting model={self._model} timeout={self._api_timeout_s}s attempt={attempt + 1}"
+            )
             t0 = time.perf_counter()
             try:
                 response = self._client.responses.create(**request_kwargs)
             except Exception as exc:  # pragma: no cover - network runtime behavior
-                if self._debug:
-                    print(f"[debug][openai] request failed: {exc}", flush=True)
+                self._emit_debug(f"[debug][openai] request failed: {exc}")
                 return ""
             elapsed = time.perf_counter() - t0
+            self._emit_usage(
+                {
+                    "attempt": attempt + 1,
+                    "elapsed_s": round(elapsed, 3),
+                    "model": self._model,
+                    **_extract_response_usage(response),
+                }
+            )
             text = (response.output_text or "").strip()
             if not text:
                 text = _extract_text_from_response_output(response)
-            if self._debug:
-                print(f"[debug][openai] response in {elapsed:.2f}s", flush=True)
-                if text:
-                    print(f"[debug][openai] raw response:\n{text}", flush=True)
-                else:
-                    print("[debug][openai] empty response text", flush=True)
-                    output = getattr(response, "output", None)
-                    if output is not None:
-                        print(f"[debug][openai] raw output items: {output}", flush=True)
+            self._emit_debug(f"[debug][openai] response in {elapsed:.2f}s")
+            if text:
+                self._emit_debug(f"[debug][openai] raw response:\n{text}")
+            else:
+                self._emit_debug("[debug][openai] empty response text")
+                output = getattr(response, "output", None)
+                if output is not None:
+                    self._emit_debug(f"[debug][openai] raw output items: {output}")
             command = _extract_command_from_model_text(text)
-            if self._debug:
-                print(f"[debug][openai] parsed command: {command}", flush=True)
+            self._emit_debug(f"[debug][openai] parsed command: {command}")
             if command:
                 return command
             prompt = (
@@ -167,6 +215,18 @@ class OpenAIAdapter:
             )
 
         return ""
+
+    def _emit_debug(self, message: str) -> None:
+        if not self._debug and self._debug_sink is None:
+            return
+        if self._debug:
+            print(message, flush=True)
+        if self._debug_sink is not None:
+            self._debug_sink(message)
+
+    def _emit_usage(self, usage: dict[str, object]) -> None:
+        if self._usage_sink is not None:
+            self._usage_sink(usage)
 
 
 def build_adapter(
@@ -178,6 +238,8 @@ def build_adapter(
     temperature: float | None = None,
     max_output_tokens: int = 500,
     retries: int = 1,
+    debug_sink: Callable[[str], None] | None = None,
+    usage_sink: Callable[[dict[str, object]], None] | None = None,
 ) -> CommandAdapter:
     if name == "oracle":
         return OracleAdapter()
@@ -189,6 +251,8 @@ def build_adapter(
             temperature=temperature,
             max_output_tokens=max_output_tokens,
             retries=retries,
+            debug_sink=debug_sink,
+            usage_sink=usage_sink,
         )
     raise ValueError(f"Unknown adapter: {name}")
 
@@ -258,3 +322,28 @@ def _extract_text_from_response_output(response: object) -> str:
                 chunks.append(text.strip())
 
     return "\n".join(chunks).strip()
+
+
+def _extract_response_usage(response: object) -> dict[str, int]:
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+
+    input_tokens = _as_int(getattr(usage, "input_tokens", None))
+    output_tokens = _as_int(getattr(usage, "output_tokens", None))
+    total_tokens = _as_int(getattr(usage, "total_tokens", None))
+    if total_tokens == 0 and (input_tokens > 0 or output_tokens > 0):
+        total_tokens = input_tokens + output_tokens
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+    }
+
+
+def _as_int(value: object) -> int:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    return 0

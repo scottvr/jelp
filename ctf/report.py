@@ -9,6 +9,7 @@ from statistics import mean, median
 
 @dataclass(frozen=True)
 class Summary:
+    iteration: int
     scenario_id: str
     mode: str
     success: bool
@@ -17,6 +18,10 @@ class Summary:
     parser_error_count: int
     duration_s: float
     time_to_success_s: float | None
+    api_call_count: int
+    model_input_tokens: int
+    model_output_tokens: int
+    model_total_tokens: int
 
 
 def _load_summaries(path: Path) -> list[Summary]:
@@ -25,8 +30,10 @@ def _load_summaries(path: Path) -> list[Summary]:
     summaries: list[Summary] = []
     for row in rows:
         summary = row.get("summary", {})
+        iteration = int(row.get("iteration", 1))
         summaries.append(
             Summary(
+                iteration=iteration,
                 scenario_id=str(summary["scenario_id"]),
                 mode=str(summary["mode"]),
                 success=bool(summary["success"]),
@@ -39,6 +46,10 @@ def _load_summaries(path: Path) -> list[Summary]:
                     if summary["time_to_success_s"] is None
                     else float(summary["time_to_success_s"])
                 ),
+                api_call_count=int(summary.get("api_call_count", 0)),
+                model_input_tokens=int(summary.get("model_input_tokens", 0)),
+                model_output_tokens=int(summary.get("model_output_tokens", 0)),
+                model_total_tokens=int(summary.get("model_total_tokens", 0)),
             )
         )
     return summaries
@@ -65,8 +76,24 @@ def _mode_stats(rows: list[Summary]) -> dict[str, dict[str, float]]:
             "mean_invalid": mean(row.invalid_command_count for row in mode_rows),
             "mean_errors": mean(row.parser_error_count for row in mode_rows),
             "median_t_success": median(t_success) if t_success else float("nan"),
+            "mean_api_calls": mean(row.api_call_count for row in mode_rows),
+            "mean_input_tokens": mean(row.model_input_tokens for row in mode_rows),
+            "mean_output_tokens": mean(row.model_output_tokens for row in mode_rows),
+            "mean_total_tokens": mean(row.model_total_tokens for row in mode_rows),
         }
     return out
+
+
+def _iteration_stats(
+    rows: list[Summary],
+) -> dict[int, dict[str, dict[str, float]]]:
+    by_iteration: dict[int, list[Summary]] = {}
+    for row in rows:
+        by_iteration.setdefault(row.iteration, []).append(row)
+    return {
+        iteration: _mode_stats(iter_rows)
+        for iteration, iter_rows in sorted(by_iteration.items())
+    }
 
 
 def _paired_delta(
@@ -75,15 +102,15 @@ def _paired_delta(
     baseline: str,
     compare: str,
 ) -> dict[str, float]:
-    by_scenario_mode: dict[tuple[str, str], Summary] = {}
+    by_scenario_mode: dict[tuple[int, str, str], Summary] = {}
     for row in rows:
-        by_scenario_mode[(row.scenario_id, row.mode)] = row
+        by_scenario_mode[(row.iteration, row.scenario_id, row.mode)] = row
 
     paired: list[tuple[Summary, Summary]] = []
-    scenario_ids = {row.scenario_id for row in rows}
-    for scenario_id in scenario_ids:
-        base = by_scenario_mode.get((scenario_id, baseline))
-        comp = by_scenario_mode.get((scenario_id, compare))
+    keys = {(row.iteration, row.scenario_id) for row in rows}
+    for iteration, scenario_id in keys:
+        base = by_scenario_mode.get((iteration, scenario_id, baseline))
+        comp = by_scenario_mode.get((iteration, scenario_id, compare))
         if base is not None and comp is not None:
             paired.append((base, comp))
 
@@ -136,8 +163,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--in", dest="input_path", required=True)
     parser.add_argument("--baseline", default="help-only")
     parser.add_argument(
-        "--compare", action="append", default=["jelp-useful", "jelp-no-meta"]
+        "--compare",
+        action="append",
+        default=[
+            "help-only-primed",
+            "jelp-useful",
+            "jelp-primed",
+            "jelp-primed-useful",
+            "jelp-primed-incremental",
+            "jelp-primed-full",
+            "jelp-no-meta",
+        ],
     )
+    parser.add_argument("--by-iteration", action="store_true")
     args = parser.parse_args(argv)
 
     rows = _load_summaries(Path(args.input_path))
@@ -151,9 +189,10 @@ def main(argv: list[str] | None = None) -> int:
         + "mean_cmds".ljust(12)
         + "median_cmds".ljust(13)
         + "mean_errors".ljust(12)
-        + "median_t_success"
+        + "median_t_success".ljust(18)
+        + "mean_total_tok"
     )
-    print("-" * 80)
+    print("-" * 96)
     for mode in sorted(stats):
         row = stats[mode]
         print(
@@ -163,7 +202,8 @@ def main(argv: list[str] | None = None) -> int:
             + _fmt(row["mean_cmds"]).ljust(12)
             + _fmt(row["median_cmds"]).ljust(13)
             + _fmt(row["mean_errors"]).ljust(12)
-            + _fmt(row["median_t_success"])
+            + _fmt(row["median_t_success"]).ljust(18)
+            + _fmt(row["mean_total_tokens"])
         )
 
     print("\nPaired deltas vs baseline:", args.baseline)
@@ -186,6 +226,34 @@ def main(argv: list[str] | None = None) -> int:
             + _fmt(delta["mean_error_delta"]).ljust(15)
             + f"{int(delta['wins'])}/{int(delta['losses'])}/{int(delta['ties'])}"
         )
+
+    if args.by_iteration:
+        print("\nPer-iteration mode summary")
+        print(
+            "iter".ljust(8)
+            + "mode".ljust(16)
+            + "n".ljust(6)
+            + "success".ljust(10)
+            + "mean_cmds".ljust(12)
+            + "mean_errors".ljust(12)
+            + "median_t_success".ljust(18)
+            + "mean_total_tok"
+        )
+        print("-" * 94)
+        iter_stats = _iteration_stats(rows)
+        for iteration, mode_stats in iter_stats.items():
+            for mode in sorted(mode_stats):
+                row = mode_stats[mode]
+                print(
+                    str(iteration).ljust(8)
+                    + mode.ljust(16)
+                    + str(int(row["n"])).ljust(6)
+                    + f"{row['success_rate']:.1%}".ljust(10)
+                    + _fmt(row["mean_cmds"]).ljust(12)
+                    + _fmt(row["mean_errors"]).ljust(12)
+                    + _fmt(row["median_t_success"]).ljust(18)
+                    + _fmt(row["mean_total_tokens"])
+                )
 
     return 0
 
