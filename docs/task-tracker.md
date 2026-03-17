@@ -6,15 +6,15 @@ This checklist was moved out of `README.md` so status updates stay lightweight.
 
 ### Core implementation
 
-- [ ] Identify where `cling` builds its top-level `argparse.ArgumentParser`
-- [ ] Add a tiny local emitter module inside `cling`
+- [x] Identify where `cling` builds its top-level `argparse.ArgumentParser`
+- [x] Add a tiny local emitter module inside `cling`
 - [x] Implement parser traversal over `ArgumentParser._actions`
 - [x] Detect and walk subcommands via `_SubParsersAction`
 - [x] Inspect `_mutually_exclusive_groups`
 - [x] Normalize parser data into an internal intermediate representation
 - [x] Emit OpenCLI-shaped JSON from the intermediate representation
-- [ ] Add `--jelp` to `cling`
-- [ ] Make `cling --jelp` print valid JSON and exit cleanly
+- [x] Add `--jelp` to `cling`
+- [x] Make `cling --jelp` print valid JSON and exit cleanly
 
 ### Coverage targets
 
@@ -34,12 +34,6 @@ This checklist was moved out of `README.md` so status updates stay lightweight.
 - [x] Hidden/help-suppressed options
 - [x] Defaults
 - [x] Descriptions/help text
-
-### Nice-to-have if already present in `cling`
-
-- [ ] `BooleanOptionalAction`
-- [ ] Argument groups
-- [ ] Custom `Action` subclasses
 
 ## Intermediate model
 
@@ -93,7 +87,7 @@ This checklist was moved out of `README.md` so status updates stay lightweight.
 
 ## Synthetic fixture
 
-Create and maintain a tiny deterministic parser fixture separate from `cling`.
+Create and maintain a tiny deterministic parser fixture
 
 - [x] `-v/--verbose` with `action='count'`
 - [x] `--format` with `choices`
@@ -119,14 +113,6 @@ Create and maintain a tiny deterministic parser fixture separate from `cling`.
 - [x] Hidden/help-suppressed behavior correct
 - [x] JSON validates structurally
 
-### Integration tests against `cling`
-
-- [ ] `cling --jelp` returns valid JSON
-- [ ] Emitted structure matches actual CLI behavior
-- [ ] Output is stable enough for snapshot or golden-file testing
-- [ ] Repeated `-v` semantics are visible
-- [ ] Any existing mutually exclusive behavior is visible
-
 ### Manual validation questions
 
 - [ ] Can an LLM discover valid subcommands from the emitted JSON?
@@ -135,45 +121,12 @@ Create and maintain a tiny deterministic parser fixture separate from `cling`.
 - [ ] Can an LLM tell that `-vvv` is meaningful?
 - [ ] Can a simple wrapper generate a useful synopsis from the JSON alone?
 
-## Extraction into standalone `jelp` repo
-
-### Packaging
-
-- [x] Create standalone repository
-- [x] Add `pyproject.toml`
-- [x] Package `jelp.argparse`
-- [x] Package `jelp.cli`
-- [x] Expose `jelp.cli:main`
-- [x] Add tests and fixtures
-- [x] Add README with native integration examples
-- [x] Add README with standalone inspection examples
-
 ### Public API
 
 - [ ] `enable_jelp(parser, ...)`
 - [x] `emit_opencli(parser, ...)`
 - [x] Decide whether pretty-print mode belongs in the library or CLI
 - [ ] Decide whether schema selection belongs in v0 or later
-
-## Uncontrolled tool analysis track
-
-Not for immediate implementation, but worth capturing now.
-
-### Modes
-
-- [ ] Runtime/native introspection if target already exposes metadata
-- [ ] `--help` parsing
-- [ ] `man` page parsing
-- [ ] README / docs / examples inference
-- [ ] Provenance tracking
-- [ ] Confidence scoring
-
-### Questions to answer later
-
-- [ ] What minimum confidence threshold is acceptable for emitted facts?
-- [ ] How should contradictory sources be handled?
-- [ ] Should inferred and authoritative fields live side by side in the same output?
-- [ ] Should uncontrolled-tool analysis be a separate command path?
 
 ## Potential upstream OpenCLI feedback
 
@@ -188,7 +141,6 @@ Capture concrete examples during implementation.
 
 ## First code artifacts to draft
 
-- [ ] `cling/jelp_emit.py` or equivalent local prototype module
 - [x] `NormalizedCommand` data structure
 - [x] `NormalizedOption` data structure
 - [x] `NormalizedArgument` data structure
@@ -201,7 +153,6 @@ Capture concrete examples during implementation.
 1. [x] Build the synthetic fixture
 2. [x] Walk `argparse` internals into a normalized model
 3. [x] Emit approximate OpenCLI JSON
-4. [ ] Add `--jelp` to `cling`
-5. [ ] Compare emitted JSON to real CLI behavior
-6. [x] Record awkward or lossy cases
-7. [x] Prepare concrete OpenCLI feedback if justified
+4. [ ] Compare emitted JSON to real CLI behavior
+5. [x] Record awkward or lossy cases
+6. [x] Prepare concrete OpenCLI feedback if justified
