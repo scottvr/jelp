@@ -1,0 +1,49 @@
+# See https://pre-commit.com/hooks.html for more hooks
+fail_fast: true
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--chars, " \t"] # Removes trailing tabs/spaces
+      - id: end-of-file-fixer # Ensures newline at end of file
+      - id: check-yaml
+      #- id: check-added-large-files
+
+  # Install pre-commit hooks via
+  # pre-commit install
+
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v4.0.0-alpha.8
+    hooks:
+      - id: prettier
+        files: \.(html|md|toml|yml|yaml)
+        args: [--prose-wrap=preserve]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.2
+    hooks:
+      - id: ruff
+        args: ["--fix", "--show-fixes", "--exit-non-zero-on-fix"]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: a66e98df7b4aeeb3724184b332785976d062b92e
+    hooks:
+      - id: mypy
+        name: "mypy 1.19.1"
+        entry: ./.venv/bin/mypy
+        files: ^src/phart/
+        exclude: ^examples/
+        pass_filenames: true
+
+  - repo: local
+    hooks:
+      - id: pytest-check
+        name: pytest-check
+        entry: ./.venv/bin/pytest
+        language: system
+        types: [python]
+        files: ^.*.py
+        pass_filenames: false
+        always_run: true
