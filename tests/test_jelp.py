@@ -5,8 +5,8 @@ from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 
-from changeling.cli import build_parser, main as cli_main
-from changeling.jelp import emit_opencli, parser_to_normalized
+from jelp.cli import build_parser, main as cli_main
+from jelp import emit_opencli, parser_to_normalized
 
 try:
     from jsonschema import validate
@@ -120,11 +120,7 @@ class JelpTests(unittest.TestCase):
         payload = emit_opencli(parser, version="1.2.3")
 
         schema_path = (
-            Path(__file__).resolve().parents[1]
-            / "docs"
-            / "architecture"
-            / "open-cli"
-            / "schema.json"
+            Path(__file__).resolve().parents[1] / "schemas" / "open-cli" / "schema.json"
         )
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         validate(instance=payload, schema=schema)
@@ -137,7 +133,7 @@ class JelpTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         payload = json.loads(stdout.getvalue())
         self.assertEqual(payload["opencli"], "0.1.0")
-        self.assertEqual(payload["info"]["title"], "changeling")
+        self.assertEqual(payload["info"]["title"], "jelp")
 
         command_names = [command["name"] for command in payload.get("commands", [])]
         self.assertEqual(command_names, ["analyze", "notes", "review", "enrich"])
@@ -168,7 +164,7 @@ class JelpTests(unittest.TestCase):
             snapshot,
             {
                 "opencli": "0.1.0",
-                "info": {"title": "changeling", "version": "1.0.1"},
+                "info": {"title": "jelp", "version": "1.0.1"},
                 "root_options": [
                     "--help",
                     "--verbose",

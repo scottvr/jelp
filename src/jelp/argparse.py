@@ -63,7 +63,9 @@ class NormalizedOption:
         if self.aliases:
             payload["aliases"] = self.aliases
         if self.arguments:
-            payload["arguments"] = [argument.to_opencli() for argument in self.arguments]
+            payload["arguments"] = [
+                argument.to_opencli() for argument in self.arguments
+            ]
         if self.description:
             payload["description"] = self.description
         if self.metadata:
@@ -92,7 +94,9 @@ class NormalizedCommand:
         if self.options:
             payload["options"] = [option.to_opencli() for option in self.options]
         if self.arguments:
-            payload["arguments"] = [argument.to_opencli() for argument in self.arguments]
+            payload["arguments"] = [
+                argument.to_opencli() for argument in self.arguments
+            ]
         if self.commands:
             payload["commands"] = [command.to_opencli() for command in self.commands]
         if self.description:
@@ -119,7 +123,9 @@ class NormalizedDocument:
         if self.options:
             payload["options"] = [option.to_opencli() for option in self.options]
         if self.arguments:
-            payload["arguments"] = [argument.to_opencli() for argument in self.arguments]
+            payload["arguments"] = [
+                argument.to_opencli() for argument in self.arguments
+            ]
         if self.commands:
             payload["commands"] = [command.to_opencli() for command in self.commands]
         if self.metadata:
@@ -202,7 +208,9 @@ def _parser_to_normalized_command(
     hidden_override: bool,
 ) -> NormalizedCommand:
     action_identifiers = _build_action_identifiers(parser)
-    action_group_membership, mutually_exclusive_groups = _build_mutually_exclusive_metadata(parser, action_identifiers)
+    action_group_membership, mutually_exclusive_groups = (
+        _build_mutually_exclusive_metadata(parser, action_identifiers)
+    )
 
     command = NormalizedCommand(
         name=name,
@@ -233,30 +241,44 @@ def _parser_to_normalized_command(
     return command
 
 
-def _collect_subcommands(subparsers_action: argparse._SubParsersAction) -> list[NormalizedCommand]:
+def _collect_subcommands(
+    subparsers_action: argparse._SubParsersAction,
+) -> list[NormalizedCommand]:
     command_entries: list[NormalizedCommand] = []
     parser_to_names: dict[int, list[str]] = {}
+    parser_by_id: dict[int, argparse.ArgumentParser] = {}
+    parser_order: list[int] = []
 
     for command_name, command_parser in subparsers_action._name_parser_map.items():
         if command_parser is None:
             continue
         parser_id = id(command_parser)
+        if parser_id not in parser_by_id:
+            parser_by_id[parser_id] = command_parser
+            parser_order.append(parser_id)
         parser_to_names.setdefault(parser_id, []).append(command_name)
 
-    choices_by_name = {choice.dest: choice for choice in subparsers_action._choices_actions}
-    ordered_primary_names = [choice.dest for choice in subparsers_action._choices_actions]
-
-    for primary_name in ordered_primary_names:
-        command_parser = subparsers_action._name_parser_map.get(primary_name)
-        if command_parser is None:
+    choices_by_name = {
+        choice.dest: choice for choice in subparsers_action._choices_actions
+    }
+    for parser_id in parser_order:
+        command_parser = parser_by_id[parser_id]
+        names = parser_to_names.get(parser_id, [])
+        if not names:
             continue
 
-        names = parser_to_names.get(id(command_parser), [primary_name])
+        primary_name = next(
+            (name for name in names if name in choices_by_name), names[0]
+        )
         aliases = [name for name in names if name != primary_name]
         choice_action = choices_by_name.get(primary_name)
 
         description: str | None = command_parser.description
-        if description is None and choice_action and choice_action.help is not argparse.SUPPRESS:
+        if (
+            description is None
+            and choice_action
+            and choice_action.help is not argparse.SUPPRESS
+        ):
             description = str(choice_action.help)
 
         hidden = bool(choice_action and choice_action.help is argparse.SUPPRESS)
@@ -274,7 +296,9 @@ def _collect_subcommands(subparsers_action: argparse._SubParsersAction) -> list[
     return command_entries
 
 
-def _build_action_identifiers(parser: argparse.ArgumentParser) -> dict[argparse.Action, str]:
+def _build_action_identifiers(
+    parser: argparse.ArgumentParser,
+) -> dict[argparse.Action, str]:
     identifiers: dict[argparse.Action, str] = {}
     for action in parser._actions:
         if isinstance(action, argparse._SubParsersAction):
@@ -317,7 +341,9 @@ def _build_mutually_exclusive_metadata(
     return action_group_membership, groups_payload
 
 
-def _action_to_option(action: argparse.Action, group_ids: list[str]) -> NormalizedOption:
+def _action_to_option(
+    action: argparse.Action, group_ids: list[str]
+) -> NormalizedOption:
     option_name, aliases = _canonical_option_strings(action.option_strings)
     option = NormalizedOption(
         name=option_name,
@@ -343,7 +369,9 @@ def _action_to_option(action: argparse.Action, group_ids: list[str]) -> Normaliz
     return option
 
 
-def _action_to_argument(action: argparse.Action, group_ids: list[str]) -> NormalizedArgument:
+def _action_to_argument(
+    action: argparse.Action, group_ids: list[str]
+) -> NormalizedArgument:
     arity = _nargs_to_arity(action.nargs)
     minimum = arity.get("minimum", 0) if arity is not None else 0
     required = bool(action.required) if hasattr(action, "required") else minimum > 0
@@ -359,7 +387,9 @@ def _action_to_argument(action: argparse.Action, group_ids: list[str]) -> Normal
     )
 
 
-def _action_metadata(action: argparse.Action, group_ids: list[str]) -> list[NormalizedMetadata]:
+def _action_metadata(
+    action: argparse.Action, group_ids: list[str]
+) -> list[NormalizedMetadata]:
     action_kind = _action_kind(action)
     metadata: list[NormalizedMetadata] = [
         NormalizedMetadata("argparse.action", action_kind),
@@ -369,7 +399,9 @@ def _action_metadata(action: argparse.Action, group_ids: list[str]) -> list[Norm
     metavar = action.metavar
     if metavar is not None:
         if isinstance(metavar, tuple):
-            metadata.append(NormalizedMetadata("argparse.metavar", [str(item) for item in metavar]))
+            metadata.append(
+                NormalizedMetadata("argparse.metavar", [str(item) for item in metavar])
+            )
         else:
             metadata.append(NormalizedMetadata("argparse.metavar", str(metavar)))
 
@@ -382,7 +414,9 @@ def _action_metadata(action: argparse.Action, group_ids: list[str]) -> list[Norm
         metadata.append(NormalizedMetadata("argparse.const", const))
 
     if group_ids:
-        metadata.append(NormalizedMetadata("argparse.mutually_exclusive_groups", group_ids))
+        metadata.append(
+            NormalizedMetadata("argparse.mutually_exclusive_groups", group_ids)
+        )
 
     if action_kind in _REPEAT_ACTIONS:
         metadata.append(NormalizedMetadata("argparse.repeat_semantics", action_kind))
@@ -406,7 +440,10 @@ def _action_description(action: argparse.Action) -> str | None:
 
 
 def _canonical_option_strings(option_strings: list[str]) -> tuple[str, list[str]]:
-    canonical = next((option for option in option_strings if option.startswith("--")), option_strings[0])
+    canonical = next(
+        (option for option in option_strings if option.startswith("--")),
+        option_strings[0],
+    )
     aliases = [option for option in option_strings if option != canonical]
     return canonical, aliases
 
