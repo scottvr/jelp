@@ -1,9 +1,11 @@
 import argparse
 import json
+import sys
 import unittest
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 from jelp.cli import build_parser, main as cli_main
 from jelp import emit_opencli, enable_jelp, handle_jelp_flag, parser_to_normalized
@@ -264,6 +266,9 @@ class JelpTests(unittest.TestCase):
     def test_handle_and_enable_jelp_integration_helpers(self) -> None:
         parser = argparse.ArgumentParser(prog="mini")
         parser.add_argument("--value")
+        subparsers = parser.add_subparsers(dest="command")
+        scan = subparsers.add_parser("scan")
+        scan.add_argument("path", nargs="?")
         enable_jelp(parser, version="0.0.1")
 
         auto_stdout = StringIO()
@@ -273,6 +278,36 @@ class JelpTests(unittest.TestCase):
         self.assertEqual(exit_ctx.exception.code, 0)
         auto_payload = json.loads(auto_stdout.getvalue())
         self.assertEqual(auto_payload["info"]["version"], "0.0.1")
+
+        scan_order_stdout = StringIO()
+        with redirect_stdout(scan_order_stdout):
+            with self.assertRaises(SystemExit) as exit_ctx:
+                parser.parse_args(["scan", "--jelp"])
+        self.assertEqual(exit_ctx.exception.code, 0)
+        scan_order_payload = json.loads(scan_order_stdout.getvalue())
+        self.assertTrue(scan_order_payload["info"]["title"].endswith("scan"))
+
+        inverted_order_stdout = StringIO()
+        with patch.object(sys, "argv", ["mini", "--jelp", "scan"]):
+            with redirect_stdout(inverted_order_stdout):
+                with self.assertRaises(SystemExit) as exit_ctx:
+                    parser.parse_args()
+        self.assertEqual(exit_ctx.exception.code, 0)
+        inverted_order_payload = json.loads(inverted_order_stdout.getvalue())
+        self.assertEqual(inverted_order_payload["info"]["title"], "mini")
+
+        parser_inverted = argparse.ArgumentParser(prog="mini-inverted")
+        sp = parser_inverted.add_subparsers(dest="command")
+        sp.add_parser("scan")
+        enable_jelp(parser_inverted, version="0.0.1", allow_inverted_order=True)
+        inverted_enabled_stdout = StringIO()
+        with patch.object(sys, "argv", ["mini-inverted", "--jelp", "scan"]):
+            with redirect_stdout(inverted_enabled_stdout):
+                with self.assertRaises(SystemExit) as exit_ctx:
+                    parser_inverted.parse_args()
+        self.assertEqual(exit_ctx.exception.code, 0)
+        inverted_enabled_payload = json.loads(inverted_enabled_stdout.getvalue())
+        self.assertTrue(inverted_enabled_payload["info"]["title"].endswith("scan"))
 
         parser_manual = argparse.ArgumentParser(prog="mini-manual")
         parser_manual.add_argument("--value")
@@ -304,6 +339,29 @@ class JelpTests(unittest.TestCase):
             version="0.0.1",
         )
         self.assertFalse(not_handled)
+
+        strict_manual = StringIO()
+        handled_strict_manual = handle_jelp_flag(
+            parser,
+            ["--jelp", "scan"],
+            version="0.0.1",
+            stream=strict_manual,
+        )
+        self.assertTrue(handled_strict_manual)
+        self.assertEqual(json.loads(strict_manual.getvalue())["info"]["title"], "mini")
+
+        inverted_manual = StringIO()
+        handled_inverted_manual = handle_jelp_flag(
+            parser,
+            ["--jelp", "scan"],
+            version="0.0.1",
+            stream=inverted_manual,
+            allow_inverted_order=True,
+        )
+        self.assertTrue(handled_inverted_manual)
+        self.assertTrue(
+            json.loads(inverted_manual.getvalue())["info"]["title"].endswith("scan")
+        )
 
     def test_emitted_json_answers_llm_discovery_questions(self) -> None:
         payload = emit_opencli(self._fixture_parser(), version="1.2.3")

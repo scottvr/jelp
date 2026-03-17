@@ -217,6 +217,7 @@ def enable_jelp(
     flag: str = "--jelp",
     pretty_flag: str = "--jelp-pretty",
     auto_handle: bool = True,
+    allow_inverted_order: bool = False,
     help_text: str = "Emit OpenCLI JSON and exit.",
     pretty_help_text: str = "Emit pretty OpenCLI JSON and exit.",
 ) -> argparse.ArgumentParser:
@@ -224,27 +225,38 @@ def enable_jelp(
         str(getattr(parser, "jelp_version", "0.0.0")) if version is None else version
     )
 
-    if auto_handle:
-        action = _make_jelp_emit_action(
-            parser=parser,
-            version=emit_version,
-            opencli_version=opencli_version,
-            pretty=False,
-        )
-        pretty_action = _make_jelp_emit_action(
-            parser=parser,
-            version=emit_version,
-            opencli_version=opencli_version,
-            pretty=True,
-        )
-    else:
-        action = "store_true"
-        pretty_action = "store_true"
+    for target_parser in _walk_parser_tree(parser):
+        if auto_handle:
+            action = _make_jelp_emit_action(
+                owner_parser=target_parser,
+                root_parser=parser,
+                version=emit_version,
+                opencli_version=opencli_version,
+                pretty=False,
+                flag=flag,
+                pretty_flag=pretty_flag,
+                allow_inverted_order=allow_inverted_order,
+            )
+            pretty_action = _make_jelp_emit_action(
+                owner_parser=target_parser,
+                root_parser=parser,
+                version=emit_version,
+                opencli_version=opencli_version,
+                pretty=True,
+                flag=flag,
+                pretty_flag=pretty_flag,
+                allow_inverted_order=allow_inverted_order,
+            )
+        else:
+            action = "store_true"
+            pretty_action = "store_true"
 
-    if flag not in parser._option_string_actions:
-        parser.add_argument(flag, action=action, help=help_text)
-    if pretty_flag not in parser._option_string_actions:
-        parser.add_argument(pretty_flag, action=pretty_action, help=pretty_help_text)
+        if flag not in target_parser._option_string_actions:
+            target_parser.add_argument(flag, action=action, help=help_text)
+        if pretty_flag not in target_parser._option_string_actions:
+            target_parser.add_argument(
+                pretty_flag, action=pretty_action, help=pretty_help_text
+            )
     return parser
 
 
@@ -256,6 +268,7 @@ def handle_jelp_flag(
     opencli_version: str = _OPENCLI_VERSION,
     flag: str = "--jelp",
     pretty_flag: str = "--jelp-pretty",
+    allow_inverted_order: bool = False,
     stream: Any = None,
 ) -> bool:
     args = list(sys.argv[1:] if argv is None else argv)
@@ -263,8 +276,22 @@ def handle_jelp_flag(
     wants_pretty = pretty_flag in args
     if not wants_compact and not wants_pretty:
         return False
+    if allow_inverted_order:
+        target_parser = _resolve_target_parser_from_argv(
+            parser,
+            args,
+            flag=flag,
+            pretty_flag=pretty_flag,
+        )
+    else:
+        target_parser = _resolve_target_parser_strict(
+            parser,
+            args,
+            flag=flag,
+            pretty_flag=pretty_flag,
+        )
     _emit_opencli_payload(
-        parser,
+        target_parser,
         version=version,
         opencli_version=opencli_version,
         pretty=wants_pretty,
@@ -275,10 +302,14 @@ def handle_jelp_flag(
 
 def _make_jelp_emit_action(
     *,
-    parser: argparse.ArgumentParser,
+    owner_parser: argparse.ArgumentParser,
+    root_parser: argparse.ArgumentParser,
     version: str,
     opencli_version: str,
     pretty: bool,
+    flag: str,
+    pretty_flag: str,
+    allow_inverted_order: bool,
 ) -> type[argparse.Action]:
     class _JelpEmitAction(argparse.Action):
         def __init__(self, option_strings: list[str], dest: str, **kwargs: Any) -> None:
@@ -293,14 +324,31 @@ def _make_jelp_emit_action(
             option_string: str | None = None,
         ) -> None:
             del namespace, values, option_string
+            target_parser = owner_parser
+            if owner_parser is root_parser:
+                argv = list(sys.argv[1:])
+                if allow_inverted_order:
+                    target_parser = _resolve_target_parser_from_argv(
+                        root_parser,
+                        argv,
+                        flag=flag,
+                        pretty_flag=pretty_flag,
+                    )
+                else:
+                    target_parser = _resolve_target_parser_strict(
+                        root_parser,
+                        argv,
+                        flag=flag,
+                        pretty_flag=pretty_flag,
+                    )
             _emit_opencli_payload(
-                parser,
+                target_parser,
                 version=version,
                 opencli_version=opencli_version,
                 pretty=pretty,
                 stream=None,
             )
-            parser.exit(0)
+            owner_parser.exit(0)
 
     return _JelpEmitAction
 
@@ -321,6 +369,105 @@ def _emit_opencli_payload(
     target = sys.stdout if stream is None else stream
     json.dump(payload, target, indent=2 if pretty else None)
     target.write("\n")
+
+
+def _walk_parser_tree(
+    parser: argparse.ArgumentParser,
+) -> list[argparse.ArgumentParser]:
+    output: list[argparse.ArgumentParser] = []
+    stack = [parser]
+    seen: set[int] = set()
+
+    while stack:
+        current = stack.pop()
+        current_id = id(current)
+        if current_id in seen:
+            continue
+        seen.add(current_id)
+        output.append(current)
+        for action in current._actions:
+            if not isinstance(action, argparse._SubParsersAction):
+                continue
+            for child in action._name_parser_map.values():
+                if child is not None:
+                    stack.append(child)
+
+    return output
+
+
+def _resolve_target_parser_from_argv(
+    root_parser: argparse.ArgumentParser,
+    argv: list[str],
+    *,
+    flag: str,
+    pretty_flag: str,
+) -> argparse.ArgumentParser:
+    flag_positions = [
+        index for index, token in enumerate(argv) if token in {flag, pretty_flag}
+    ]
+    if not flag_positions:
+        return _resolve_target_parser_from_tokens(root_parser, argv)
+
+    first_flag = flag_positions[0]
+    after_flag = _resolve_target_parser_from_tokens(root_parser, argv[first_flag + 1 :])
+    if after_flag is not root_parser:
+        return after_flag
+
+    before_flag = _resolve_target_parser_from_tokens(root_parser, argv[:first_flag])
+    if before_flag is not root_parser:
+        return before_flag
+
+    return _resolve_target_parser_from_tokens(root_parser, argv)
+
+
+def _resolve_target_parser_strict(
+    root_parser: argparse.ArgumentParser,
+    argv: list[str],
+    *,
+    flag: str,
+    pretty_flag: str,
+) -> argparse.ArgumentParser:
+    for index, token in enumerate(argv):
+        if token in {flag, pretty_flag}:
+            return _resolve_target_parser_from_tokens(root_parser, argv[:index])
+    return _resolve_target_parser_from_tokens(root_parser, argv)
+
+
+def _resolve_target_parser_from_tokens(
+    root_parser: argparse.ArgumentParser,
+    tokens: list[str],
+) -> argparse.ArgumentParser:
+    current = root_parser
+    remaining = tokens
+
+    while True:
+        subparsers_action = _first_subparsers_action(current)
+        if subparsers_action is None:
+            return current
+
+        matched_parser: argparse.ArgumentParser | None = None
+        matched_index = -1
+        for index, token in enumerate(remaining):
+            candidate = subparsers_action._name_parser_map.get(token)
+            if candidate is not None:
+                matched_parser = candidate
+                matched_index = index
+                break
+
+        if matched_parser is None:
+            return current
+
+        current = matched_parser
+        remaining = remaining[matched_index + 1 :]
+
+
+def _first_subparsers_action(
+    parser: argparse.ArgumentParser,
+) -> argparse._SubParsersAction | None:
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return action
+    return None
 
 
 def _parser_to_normalized_command(
