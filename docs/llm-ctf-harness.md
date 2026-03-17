@@ -150,6 +150,17 @@ For GPT-5 family models that sometimes return empty or partial text, try:
 - In `jelp-no-meta` mode, metadata-bearing flags are rejected.
 - Commands must invoke fixture CLIs via `python ...`; non-CLI shell exploration is rejected for consistency.
 
+## Execution model and safety
+
+- The harness executes real local subprocesses for accepted model commands.
+- It is not a VM/sandbox boundary; run only in a trusted local environment.
+- Command validation is strict:
+  - command must parse as shell tokens
+  - first token must be `python`
+  - second token must be the expected fixture script (for example `fixture01_vault.py`)
+- Commands that fail validation are rejected and logged, not executed.
+- Potential exploit-like command patterns (shell control tokens, subshell/backtick markers, multiline command text) emit `[anomaly]` alerts and are recorded in the run log, in case the model under evaluation gets more "creative" than expected. We call it out because it would be fascinating if it occurred, but it isn't the point of the harness, so we disallow it to avoid polluting the results (and for the safety of the machine running the test harness.)
+
 ## Files
 
 - Runner: `ctf/harness.py`

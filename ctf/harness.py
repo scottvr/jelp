@@ -17,6 +17,7 @@ from ctf.adapters import TurnRecord, build_adapter
 from ctf.scenarios import SCENARIOS, Scenario, fixture_dir
 
 FLAG_RE = re.compile(r"FLAG\{[^}]+\}")
+SHELL_CONTROL_TOKENS = {";", "|", "||", "&&", ">", "<", ">>", "<<", "&"}
 
 
 def _usage_int(value: object) -> int:
@@ -25,6 +26,43 @@ def _usage_int(value: object) -> int:
     if isinstance(value, float):
         return int(value)
     return 0
+
+
+def _split_command(command: str) -> tuple[list[str] | None, str | None]:
+    try:
+        return shlex.split(command), None
+    except ValueError as exc:
+        return None, str(exc)
+
+
+def _detect_command_anomalies(*, command: str, tokens: list[str] | None) -> list[str]:
+    reasons: list[str] = []
+    if "\n" in command or "\r" in command:
+        reasons.append("contains newline control characters")
+    if "$(" in command:
+        reasons.append("contains shell-style subshell marker '$('")
+    if "`" in command:
+        reasons.append("contains shell-style backtick execution marker")
+    if tokens is not None:
+        matched = sorted({token for token in tokens if token in SHELL_CONTROL_TOKENS})
+        if matched:
+            reasons.append(
+                "contains shell control tokens: "
+                + ", ".join(f"'{token}'" for token in matched)
+            )
+    return reasons
+
+
+def _command_rejection_reason(*, tokens: list[str], expected_script: str) -> str | None:
+    if not tokens:
+        return "command must start with 'python '"
+    if tokens[0] != "python":
+        return "command must start with 'python '"
+    if len(tokens) < 2:
+        return f"command must target '{expected_script}'"
+    if tokens[1] != expected_script:
+        return f"command must target '{expected_script}'"
+    return None
 
 
 @dataclass
@@ -38,6 +76,7 @@ class RunResult:
     command_count: int
     invalid_command_count: int
     parser_error_count: int
+    anomaly_count: int
     duration_s: float
     time_to_success_s: float | None
     api_call_count: int
@@ -46,8 +85,7 @@ class RunResult:
     model_total_tokens: int
 
 
-def _policy_violation(mode: str, command: str) -> str | None:
-    tokens = shlex.split(command)
+def _policy_violation(mode: str, tokens: list[str]) -> str | None:
     jelp_tokens = {
         "--jelp",
         "--jelp-pretty",
@@ -128,36 +166,62 @@ def _policy_violation(mode: str, command: str) -> str | None:
 
 
 def _is_non_penalized_jelp_probe(mode: str, command: str, violation: str) -> bool:
+    tokens, split_error = _split_command(command)
+    if split_error is not None or tokens is None:
+        return False
+    return _is_non_penalized_jelp_probe_tokens(
+        mode=mode,
+        tokens=tokens,
+        violation=violation,
+    )
+
+
+def _is_non_penalized_jelp_probe_tokens(
+    *, mode: str, tokens: list[str], violation: str
+) -> bool:
     if mode != "help-only-primed":
         return False
     if "jelp flags disallowed" not in violation:
         return False
-    tokens = shlex.split(command)
     return any(token.startswith("--jelp") for token in tokens)
 
 
 def _execute_command(
-    command: str, *, cwd: Path, env: dict[str, str], timeout_s: float
+    command: str,
+    *,
+    argv_tokens: list[str],
+    cwd: Path,
+    env: dict[str, str],
+    timeout_s: float,
 ) -> TurnRecord:
-    command_to_run = command
-    if command.startswith("python "):
-        command_to_run = f"{shlex.quote(sys.executable)} {command[len('python ') :]}"
-
-    proc = subprocess.run(
-        command_to_run,
-        cwd=str(cwd),
-        env=env,
-        shell=True,
-        capture_output=True,
-        text=True,
-        timeout=timeout_s,
-    )
-    return TurnRecord(
-        command=command,
-        returncode=proc.returncode,
-        stdout=proc.stdout,
-        stderr=proc.stderr,
-    )
+    executable_argv = [sys.executable, *argv_tokens[1:]]
+    try:
+        proc = subprocess.run(
+            executable_argv,
+            cwd=str(cwd),
+            env=env,
+            shell=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+        return TurnRecord(
+            command=command,
+            returncode=proc.returncode,
+            stdout=proc.stdout,
+            stderr=proc.stderr,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stdout = exc.stdout if isinstance(exc.stdout, str) else ""
+        stderr = exc.stderr if isinstance(exc.stderr, str) else ""
+        suffix = f"Timed out after {timeout_s}s"
+        stderr = f"{stderr}\n{suffix}".strip()
+        return TurnRecord(
+            command=command,
+            returncode=124,
+            stdout=stdout,
+            stderr=stderr,
+        )
 
 
 def _run_single(
@@ -175,9 +239,16 @@ def _run_single(
     response_max_output_tokens: int,
     adapter_retries: int,
     reject_duplicates: bool,
-) -> tuple[RunResult, list[TurnRecord], list[str]]:
+) -> tuple[
+    RunResult,
+    list[TurnRecord],
+    list[str],
+    list[dict[str, object]],
+    list[dict[str, object]],
+]:
     debug_events: list[str] = []
     model_usage_events: list[dict[str, object]] = []
+    anomaly_events: list[dict[str, object]] = []
 
     def _record_debug_event(message: str) -> None:
         if debug:
@@ -219,6 +290,23 @@ def _run_single(
     env["PYTHONPATH"] = str(repo_root / "src")
     env["JELP_MODE"] = mode
 
+    def _emit_anomaly(*, step: int, command: str, reason: str) -> None:
+        event = {
+            "step": step,
+            "scenario_id": scenario.id,
+            "mode": mode,
+            "command": command,
+            "reason": reason,
+        }
+        anomaly_events.append(event)
+        message = (
+            f"[anomaly] scenario={scenario.id} mode={mode} step={step} "
+            f"reason={reason} command={command}"
+        )
+        print(message, flush=True)
+        if debug:
+            _record_debug_event(message)
+
     while counted_steps < max_steps:
         step = counted_steps + 1
         _emit_debug(f"[debug] scenario={scenario.id} mode={mode} step={step}")
@@ -251,21 +339,43 @@ def _run_single(
             continue
         seen_commands.add(command)
 
-        if not command.startswith("python "):
+        tokens, split_error = _split_command(command)
+        for reason in _detect_command_anomalies(command=command, tokens=tokens):
+            _emit_anomaly(step=step, command=command, reason=reason)
+
+        if split_error is not None or tokens is None:
             invalid += 1
             turns.append(
                 TurnRecord(
                     command=command,
                     returncode=126,
                     stdout="",
-                    stderr="Rejected: command must start with 'python '",
+                    stderr=f"Rejected: malformed command syntax ({split_error})",
                 )
             )
-            _emit_debug("[debug] rejected command: must start with python")
+            _emit_debug("[debug] rejected command: malformed syntax")
             counted_steps += 1
             continue
 
-        violation = _policy_violation(mode, command)
+        target_rejection = _command_rejection_reason(
+            tokens=tokens,
+            expected_script=scenario.script,
+        )
+        if target_rejection is not None:
+            invalid += 1
+            turns.append(
+                TurnRecord(
+                    command=command,
+                    returncode=126,
+                    stdout="",
+                    stderr=f"Rejected: {target_rejection}",
+                )
+            )
+            _emit_debug(f"[debug] rejected command: {target_rejection}")
+            counted_steps += 1
+            continue
+
+        violation = _policy_violation(mode, tokens)
         if violation:
             invalid += 1
             turns.append(
@@ -277,7 +387,11 @@ def _run_single(
                 )
             )
             _emit_debug(f"[debug] policy violation: {violation}")
-            if _is_non_penalized_jelp_probe(mode, command, violation):
+            if _is_non_penalized_jelp_probe_tokens(
+                mode=mode,
+                tokens=tokens,
+                violation=violation,
+            ):
                 free_probe_rejections += 1
                 _emit_debug(
                     "[debug] non-penalized jelp probe rejected; step budget unchanged"
@@ -291,7 +405,13 @@ def _run_single(
             counted_steps += 1
             continue
 
-        turn = _execute_command(command, cwd=fixtures, env=env, timeout_s=timeout_s)
+        turn = _execute_command(
+            command,
+            argv_tokens=tokens,
+            cwd=fixtures,
+            env=env,
+            timeout_s=timeout_s,
+        )
         turns.append(turn)
         counted_steps += 1
         _emit_debug(f"[debug] exit={turn.returncode}")
@@ -332,6 +452,7 @@ def _run_single(
         command_count=counted_steps,
         invalid_command_count=invalid,
         parser_error_count=parser_errors,
+        anomaly_count=len(anomaly_events),
         duration_s=round(duration, 3),
         time_to_success_s=round(success_time, 3) if success_time is not None else None,
         api_call_count=len(model_usage_events),
@@ -339,7 +460,7 @@ def _run_single(
         model_output_tokens=model_output_tokens,
         model_total_tokens=model_total_tokens,
     )
-    return result, turns, debug_events, model_usage_events
+    return result, turns, debug_events, model_usage_events, anomaly_events
 
 
 def _print_summary(results: list[RunResult]) -> None:
@@ -350,6 +471,7 @@ def _print_summary(results: list[RunResult]) -> None:
         + " cmds".ljust(8)
         + " invalid".ljust(10)
         + " errors".ljust(9)
+        + " anomalies".ljust(11)
         + " t_success"
     )
     print(header)
@@ -362,6 +484,7 @@ def _print_summary(results: list[RunResult]) -> None:
             + str(result.command_count).ljust(8)
             + str(result.invalid_command_count).ljust(10)
             + str(result.parser_error_count).ljust(9)
+            + str(result.anomaly_count).ljust(11)
             + str(result.time_to_success_s)
         )
 
@@ -474,20 +597,22 @@ def main(argv: list[str] | None = None) -> int:
             )
         for scenario in selected:
             for mode in args.modes:
-                result, turns, debug_events, model_usage_events = _run_single(
-                    scenario=scenario,
-                    mode=mode,
-                    adapter_name=args.adapter,
-                    model=args.model,
-                    max_steps=args.max_steps,
-                    timeout_s=args.timeout_s,
-                    repo_root=repo_root,
-                    debug=args.debug,
-                    api_timeout_s=args.api_timeout_s,
-                    temperature=args.temperature,
-                    response_max_output_tokens=args.response_max_output_tokens,
-                    adapter_retries=args.adapter_retries,
-                    reject_duplicates=not args.allow_duplicates,
+                result, turns, debug_events, model_usage_events, anomaly_events = (
+                    _run_single(
+                        scenario=scenario,
+                        mode=mode,
+                        adapter_name=args.adapter,
+                        model=args.model,
+                        max_steps=args.max_steps,
+                        timeout_s=args.timeout_s,
+                        repo_root=repo_root,
+                        debug=args.debug,
+                        api_timeout_s=args.api_timeout_s,
+                        temperature=args.temperature,
+                        response_max_output_tokens=args.response_max_output_tokens,
+                        adapter_retries=args.adapter_retries,
+                        reject_duplicates=not args.allow_duplicates,
+                    )
                 )
                 all_results.append(result)
                 run_log["results"].append(
@@ -497,6 +622,7 @@ def main(argv: list[str] | None = None) -> int:
                         "turns": [asdict(turn) for turn in turns],
                         "debug_events": debug_events,
                         "model_usage": model_usage_events,
+                        "anomalies": anomaly_events,
                     }
                 )
 
