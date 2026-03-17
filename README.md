@@ -37,8 +37,10 @@ args = parser.parse_args(argv)
 
 That is enough. `enable_jelp(...)` installs:
 
-- `--jelp` (compact JSON)
-- `--jelp-pretty` (indented JSON)
+- `--jelp` (compact JSON, useful metadata)
+- `--jelp-pretty` (indented JSON, useful metadata)
+- `--jelp-no-meta` (compact JSON, no metadata)
+- `--jelp-all` (compact JSON, full metadata)
 
 When either flag is present, `parse_args()` emits JSON and exits with code `0`.
 
@@ -79,6 +81,14 @@ from jelp.argparse import emit_opencli
 data = emit_opencli(parser, version="1.2.3")
 ```
 
+Metadata profile can be selected:
+
+```python
+emit_opencli(parser, version="1.2.3", metadata_level="useful")  # default
+emit_opencli(parser, version="1.2.3", metadata_level="none")
+emit_opencli(parser, version="1.2.3", metadata_level="all")
+```
+
 ### Add examples to output
 
 If your parser (or subparser) defines `jelp_examples`, they are emitted into OpenCLI `examples`.
@@ -112,19 +122,23 @@ parser.jelp_examples = [
 - Defaults stay in metadata (`argparse.default`) for now.
 - Repeatable behavior stays in metadata (`argparse.repeat_semantics`) for now.
 
+Metadata levels:
+
+- `useful` (default): keeps caller-relevant metadata
+- `none`: strips all metadata
+- `all`: includes full internal metadata (debug/audit)
+
+When jelp injects flags via `enable_jelp(...)`, provenance is tagged in metadata:
+
+- option-level: `jelp.injected: true`
+- parser-level: `jelp.injected_options: [...]`
+
 See:
 
 - [docs/v0-decisions.md](docs/v0-decisions.md)
 - [docs/opencli-feedback-examples.md](docs/opencli-feedback-examples.md)
-- [docs/task-tracker.md](docs/task-tracker.md)
-- [docs/task-tracker-roadmap.md](docs/task-tracker-roadmap.md)
-
-## Tests
-
-```bash
-PYTHONPATH=src pytest -q
-```
 
 ## Why this project exists
 
-Many CLIs already contain high-quality structural truth in their parser definitions. `jelp` surfaces that truth directly for automation, wrappers, doc tooling, and LLM systems.
+Many CLIs already contain high-quality structural truth in their parser definitions.
+`jelp` surfaces that truth directly for automation, wrappers, doc tooling, and LLM systems.

@@ -161,7 +161,15 @@ class JelpTests(unittest.TestCase):
         root_options = [option["name"] for option in payload.get("options", [])]
         self.assertEqual(
             root_options,
-            ["--help", "--verbose", "--cache-mode", "--jelp", "--jelp-pretty"],
+            [
+                "--help",
+                "--verbose",
+                "--cache-mode",
+                "--jelp",
+                "--jelp-pretty",
+                "--jelp-no-meta",
+                "--jelp-all",
+            ],
         )
 
     def test_cli_jelp_pretty_emits_indented_json(self) -> None:
@@ -191,6 +199,8 @@ class JelpTests(unittest.TestCase):
                     "--cache-mode",
                     "--jelp",
                     "--jelp-pretty",
+                    "--jelp-no-meta",
+                    "--jelp-all",
                 ],
                 "commands": ["analyze", "notes", "review", "enrich"],
                 "command_options": {
@@ -362,6 +372,87 @@ class JelpTests(unittest.TestCase):
         self.assertTrue(
             json.loads(inverted_manual.getvalue())["info"]["title"].endswith("scan")
         )
+
+    def test_metadata_levels_useful_none_all(self) -> None:
+        parser = self._fixture_parser()
+        useful = emit_opencli(parser, version="1.2.3", metadata_level="useful")
+        none = emit_opencli(parser, version="1.2.3", metadata_level="none")
+        all_data = emit_opencli(parser, version="1.2.3", metadata_level="all")
+
+        useful_verbose = next(
+            option for option in useful["options"] if option["name"] == "--verbose"
+        )
+        useful_metadata_names = {
+            entry["name"] for entry in useful_verbose.get("metadata", [])
+        }
+        self.assertIn("argparse.action", useful_metadata_names)
+        self.assertIn("argparse.repeat_semantics", useful_metadata_names)
+        self.assertNotIn("argparse.dest", useful_metadata_names)
+
+        all_verbose = next(
+            option for option in all_data["options"] if option["name"] == "--verbose"
+        )
+        all_metadata_names = {
+            entry["name"] for entry in all_verbose.get("metadata", [])
+        }
+        self.assertIn("argparse.dest", all_metadata_names)
+
+        self.assertNotIn("metadata", none)
+        self.assertTrue(
+            all("metadata" not in option for option in none.get("options", []))
+        )
+
+    def test_jelp_injected_option_provenance(self) -> None:
+        parser = argparse.ArgumentParser(prog="prov")
+        parser.add_argument("--native")
+        enable_jelp(parser, version="0.0.1")
+
+        useful = emit_opencli(parser, version="0.0.1", metadata_level="useful")
+        root_meta = useful.get("metadata", [])
+        injected_list = self._metadata_value(root_meta, "jelp.injected_options")
+        self.assertEqual(
+            injected_list,
+            ["--jelp", "--jelp-pretty", "--jelp-no-meta", "--jelp-all"],
+        )
+
+        options = {option["name"]: option for option in useful.get("options", [])}
+        injected_option_meta = {
+            entry["name"] for entry in options["--jelp"].get("metadata", [])
+        }
+        self.assertIn("jelp.injected", injected_option_meta)
+
+        native_option_meta = {
+            entry["name"] for entry in options["--native"].get("metadata", [])
+        }
+        self.assertNotIn("jelp.injected", native_option_meta)
+
+        none = emit_opencli(parser, version="0.0.1", metadata_level="none")
+        self.assertNotIn("metadata", none)
+        none_options = {option["name"]: option for option in none.get("options", [])}
+        self.assertNotIn("metadata", none_options["--jelp"])
+
+    def test_cli_no_meta_and_all_flags(self) -> None:
+        no_meta_stdout = StringIO()
+        with redirect_stdout(no_meta_stdout):
+            rc = cli_main(["--jelp-no-meta"])
+        self.assertEqual(rc, 0)
+        no_meta_payload = json.loads(no_meta_stdout.getvalue())
+        self.assertNotIn("metadata", no_meta_payload)
+
+        all_stdout = StringIO()
+        with redirect_stdout(all_stdout):
+            rc = cli_main(["--jelp-all"])
+        self.assertEqual(rc, 0)
+        all_payload = json.loads(all_stdout.getvalue())
+        verbose = next(
+            option
+            for option in all_payload.get("options", [])
+            if option["name"] == "--verbose"
+        )
+        verbose_metadata_names = {
+            entry["name"] for entry in verbose.get("metadata", [])
+        }
+        self.assertIn("argparse.dest", verbose_metadata_names)
 
     def test_emitted_json_answers_llm_discovery_questions(self) -> None:
         payload = emit_opencli(self._fixture_parser(), version="1.2.3")

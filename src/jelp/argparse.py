@@ -5,10 +5,12 @@ import json
 import sys
 from dataclasses import dataclass, field
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, Literal
 
 
 _OPENCLI_VERSION = "0.1.0"
+MetadataLevel = Literal["useful", "none", "all"]
+_VALID_METADATA_LEVELS: set[str] = {"useful", "none", "all"}
 
 
 @dataclass(slots=True)
@@ -200,13 +202,17 @@ def emit_opencli(
     *,
     version: str,
     opencli_version: str = _OPENCLI_VERSION,
+    metadata_level: MetadataLevel = "useful",
 ) -> dict[str, Any]:
+    _validate_metadata_level(metadata_level)
     normalized = parser_to_normalized(
         parser,
         version=version,
         opencli_version=opencli_version,
     )
-    return normalized_to_opencli(normalized)
+    payload = normalized_to_opencli(normalized)
+    _apply_metadata_level(payload, metadata_level)
+    return payload
 
 
 def enable_jelp(
@@ -216,10 +222,14 @@ def enable_jelp(
     opencli_version: str = _OPENCLI_VERSION,
     flag: str = "--jelp",
     pretty_flag: str = "--jelp-pretty",
+    no_meta_flag: str = "--jelp-no-meta",
+    all_flag: str = "--jelp-all",
     auto_handle: bool = True,
     allow_inverted_order: bool = False,
     help_text: str = "Emit OpenCLI JSON and exit.",
     pretty_help_text: str = "Emit pretty OpenCLI JSON and exit.",
+    no_meta_help_text: str = "Emit OpenCLI JSON without metadata and exit.",
+    all_help_text: str = "Emit OpenCLI JSON with all metadata and exit.",
 ) -> argparse.ArgumentParser:
     emit_version = (
         str(getattr(parser, "jelp_version", "0.0.0")) if version is None else version
@@ -235,6 +245,9 @@ def enable_jelp(
                 pretty=False,
                 flag=flag,
                 pretty_flag=pretty_flag,
+                no_meta_flag=no_meta_flag,
+                all_flag=all_flag,
+                metadata_level="useful",
                 allow_inverted_order=allow_inverted_order,
             )
             pretty_action = _make_jelp_emit_action(
@@ -245,18 +258,65 @@ def enable_jelp(
                 pretty=True,
                 flag=flag,
                 pretty_flag=pretty_flag,
+                no_meta_flag=no_meta_flag,
+                all_flag=all_flag,
+                metadata_level="useful",
+                allow_inverted_order=allow_inverted_order,
+            )
+            no_meta_action = _make_jelp_emit_action(
+                owner_parser=target_parser,
+                root_parser=parser,
+                version=emit_version,
+                opencli_version=opencli_version,
+                pretty=False,
+                flag=flag,
+                pretty_flag=pretty_flag,
+                no_meta_flag=no_meta_flag,
+                all_flag=all_flag,
+                metadata_level="none",
+                allow_inverted_order=allow_inverted_order,
+            )
+            all_action = _make_jelp_emit_action(
+                owner_parser=target_parser,
+                root_parser=parser,
+                version=emit_version,
+                opencli_version=opencli_version,
+                pretty=False,
+                flag=flag,
+                pretty_flag=pretty_flag,
+                no_meta_flag=no_meta_flag,
+                all_flag=all_flag,
+                metadata_level="all",
                 allow_inverted_order=allow_inverted_order,
             )
         else:
             action = "store_true"
             pretty_action = "store_true"
+            no_meta_action = "store_true"
+            all_action = "store_true"
 
         if flag not in target_parser._option_string_actions:
-            target_parser.add_argument(flag, action=action, help=help_text)
+            added = target_parser.add_argument(flag, action=action, help=help_text)
+            _mark_jelp_injected_option(target_parser, added)
         if pretty_flag not in target_parser._option_string_actions:
-            target_parser.add_argument(
+            added = target_parser.add_argument(
                 pretty_flag, action=pretty_action, help=pretty_help_text
             )
+            _mark_jelp_injected_option(target_parser, added)
+        if no_meta_flag not in target_parser._option_string_actions:
+            added = target_parser.add_argument(
+                no_meta_flag,
+                action=no_meta_action,
+                help=no_meta_help_text,
+            )
+            _mark_jelp_injected_option(target_parser, added)
+        if all_flag not in target_parser._option_string_actions:
+            added = target_parser.add_argument(
+                all_flag,
+                action=all_action,
+                help=all_help_text,
+            )
+            _mark_jelp_injected_option(target_parser, added)
     return parser
 
 
@@ -268,33 +328,46 @@ def handle_jelp_flag(
     opencli_version: str = _OPENCLI_VERSION,
     flag: str = "--jelp",
     pretty_flag: str = "--jelp-pretty",
+    no_meta_flag: str = "--jelp-no-meta",
+    all_flag: str = "--jelp-all",
     allow_inverted_order: bool = False,
     stream: Any = None,
 ) -> bool:
     args = list(sys.argv[1:] if argv is None else argv)
     wants_compact = flag in args
     wants_pretty = pretty_flag in args
-    if not wants_compact and not wants_pretty:
+    wants_no_meta = no_meta_flag in args
+    wants_all = all_flag in args
+    if not wants_compact and not wants_pretty and not wants_no_meta and not wants_all:
         return False
+    jelp_flags = {flag, pretty_flag, no_meta_flag, all_flag}
     if allow_inverted_order:
         target_parser = _resolve_target_parser_from_argv(
             parser,
             args,
-            flag=flag,
-            pretty_flag=pretty_flag,
+            jelp_flags=jelp_flags,
         )
     else:
         target_parser = _resolve_target_parser_strict(
             parser,
             args,
-            flag=flag,
-            pretty_flag=pretty_flag,
+            jelp_flags=jelp_flags,
         )
+    metadata_level: MetadataLevel = "useful"
+    pretty = wants_pretty
+    if wants_all:
+        metadata_level = "all"
+        pretty = False
+    elif wants_no_meta:
+        metadata_level = "none"
+        pretty = False
+
     _emit_opencli_payload(
         target_parser,
         version=version,
         opencli_version=opencli_version,
-        pretty=wants_pretty,
+        metadata_level=metadata_level,
+        pretty=pretty,
         stream=stream,
     )
     return True
@@ -309,6 +382,9 @@ def _make_jelp_emit_action(
     pretty: bool,
     flag: str,
     pretty_flag: str,
+    no_meta_flag: str,
+    all_flag: str,
+    metadata_level: MetadataLevel,
     allow_inverted_order: bool,
 ) -> type[argparse.Action]:
     class _JelpEmitAction(argparse.Action):
@@ -327,24 +403,24 @@ def _make_jelp_emit_action(
             target_parser = owner_parser
             if owner_parser is root_parser:
                 argv = list(sys.argv[1:])
+                jelp_flags = {flag, pretty_flag, no_meta_flag, all_flag}
                 if allow_inverted_order:
                     target_parser = _resolve_target_parser_from_argv(
                         root_parser,
                         argv,
-                        flag=flag,
-                        pretty_flag=pretty_flag,
+                        jelp_flags=jelp_flags,
                     )
                 else:
                     target_parser = _resolve_target_parser_strict(
                         root_parser,
                         argv,
-                        flag=flag,
-                        pretty_flag=pretty_flag,
+                        jelp_flags=jelp_flags,
                     )
             _emit_opencli_payload(
                 target_parser,
                 version=version,
                 opencli_version=opencli_version,
+                metadata_level=metadata_level,
                 pretty=pretty,
                 stream=None,
             )
@@ -358,6 +434,7 @@ def _emit_opencli_payload(
     *,
     version: str,
     opencli_version: str,
+    metadata_level: MetadataLevel,
     pretty: bool,
     stream: Any = None,
 ) -> None:
@@ -365,6 +442,7 @@ def _emit_opencli_payload(
         parser,
         version=version,
         opencli_version=opencli_version,
+        metadata_level=metadata_level,
     )
     target = sys.stdout if stream is None else stream
     json.dump(payload, target, indent=2 if pretty else None)
@@ -395,16 +473,23 @@ def _walk_parser_tree(
     return output
 
 
+def _mark_jelp_injected_option(
+    parser: argparse.ArgumentParser,
+    action: argparse.Action,
+) -> None:
+    setattr(action, "jelp_injected", True)
+    injected = list(getattr(parser, "jelp_injected_option_strings", []))
+    injected.append(action.option_strings[0] if action.option_strings else action.dest)
+    setattr(parser, "jelp_injected_option_strings", injected)
+
+
 def _resolve_target_parser_from_argv(
     root_parser: argparse.ArgumentParser,
     argv: list[str],
     *,
-    flag: str,
-    pretty_flag: str,
+    jelp_flags: set[str],
 ) -> argparse.ArgumentParser:
-    flag_positions = [
-        index for index, token in enumerate(argv) if token in {flag, pretty_flag}
-    ]
+    flag_positions = [index for index, token in enumerate(argv) if token in jelp_flags]
     if not flag_positions:
         return _resolve_target_parser_from_tokens(root_parser, argv)
 
@@ -424,13 +509,79 @@ def _resolve_target_parser_strict(
     root_parser: argparse.ArgumentParser,
     argv: list[str],
     *,
-    flag: str,
-    pretty_flag: str,
+    jelp_flags: set[str],
 ) -> argparse.ArgumentParser:
     for index, token in enumerate(argv):
-        if token in {flag, pretty_flag}:
+        if token in jelp_flags:
             return _resolve_target_parser_from_tokens(root_parser, argv[:index])
     return _resolve_target_parser_from_tokens(root_parser, argv)
+
+
+def _validate_metadata_level(metadata_level: str) -> None:
+    if metadata_level not in _VALID_METADATA_LEVELS:
+        raise ValueError(
+            f"Invalid metadata_level: {metadata_level!r}. "
+            "Expected one of: 'useful', 'none', 'all'."
+        )
+
+
+def _apply_metadata_level(
+    payload: dict[str, Any], metadata_level: MetadataLevel
+) -> None:
+    if metadata_level == "all":
+        return
+    _prune_metadata(payload, metadata_level)
+
+
+def _prune_metadata(node: Any, metadata_level: MetadataLevel) -> None:
+    if isinstance(node, dict):
+        if "metadata" in node:
+            if metadata_level == "none":
+                del node["metadata"]
+            else:
+                filtered = [
+                    entry
+                    for entry in node["metadata"]
+                    if _is_useful_metadata_entry(entry)
+                ]
+                if filtered:
+                    node["metadata"] = filtered
+                else:
+                    del node["metadata"]
+        for value in node.values():
+            _prune_metadata(value, metadata_level)
+    elif isinstance(node, list):
+        for item in node:
+            _prune_metadata(item, metadata_level)
+
+
+def _is_useful_metadata_entry(entry: Any) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    name = entry.get("name")
+    if not isinstance(name, str):
+        return False
+    if not name.startswith("argparse."):
+        return True
+    if name in {
+        "argparse.default",
+        "argparse.const",
+        "argparse.repeat_semantics",
+        "argparse.mutually_exclusive_groups",
+    }:
+        return True
+    if name == "argparse.action":
+        action_value = entry.get("value")
+        return action_value not in {
+            "store",
+            "store_true",
+            "store_false",
+            "store_const",
+            "help",
+            "version",
+            "subparsers",
+        }
+    return False
 
 
 def _resolve_target_parser_from_tokens(
@@ -507,6 +658,14 @@ def _parser_to_normalized_command(
             NormalizedMetadata(
                 name="argparse.mutually_exclusive_groups",
                 value=mutually_exclusive_groups,
+            )
+        )
+    injected_options = list(getattr(parser, "jelp_injected_option_strings", []))
+    if injected_options:
+        command.metadata.append(
+            NormalizedMetadata(
+                name="jelp.injected_options",
+                value=injected_options,
             )
         )
 
@@ -692,6 +851,8 @@ def _action_metadata(
 
     if action_kind in _REPEAT_ACTIONS:
         metadata.append(NormalizedMetadata("argparse.repeat_semantics", action_kind))
+    if bool(getattr(action, "jelp_injected", False)):
+        metadata.append(NormalizedMetadata("jelp.injected", True))
 
     return metadata
 

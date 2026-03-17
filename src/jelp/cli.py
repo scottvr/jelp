@@ -23,6 +23,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cache-mode")
     parser.add_argument("--jelp", action="store_true")
     parser.add_argument("--jelp-pretty", action="store_true")
+    parser.add_argument("--jelp-no-meta", action="store_true")
+    parser.add_argument("--jelp-all", action="store_true")
 
     subparsers = parser.add_subparsers(dest="command")
 
