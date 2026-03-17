@@ -118,7 +118,7 @@ parser.jelp_examples = [
 
 ## Current decisions
 
-- Schema selection is out of v0; current target is OpenCLI draft shape.
+- Schema selection is not in v0; current target is OpenCLI draft shape.
 - Defaults stay in metadata (`argparse.default`) for now.
 - Repeatable behavior stays in metadata (`argparse.repeat_semantics`) for now.
 
