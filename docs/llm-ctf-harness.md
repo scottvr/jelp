@@ -201,3 +201,29 @@ PYTHONPATH=src:. .venv/bin/python ctf/decision_report.py \
 ```
 
 See `docs/opencli-decision-protocol.md` for locked thresholds and evidence rules.
+
+## Cost report (API spend estimate)
+
+Estimate API spend from recorded token usage in run logs:
+
+```bash
+PYTHONPATH=src:. .venv/bin/python ctf/cost_report.py \
+  --in ctf/results/confirmatory-gpt-4.1-mini.json \
+  --in ctf/results/confirmatory-gpt-5-mini.json \
+  --forecast-iterations 3 \
+  --json-out ctf/results/confirmatory-cost.json
+```
+
+Optional adjustments:
+
+- `--assume-cached-input-ratio 0.25` to model partial cached-input billing.
+- `--price MODEL,INPUT,OUTPUT[,CACHED_INPUT]` to override model pricing.
+- `--pricing-json path/to/pricing.json` to load pricing map from a file.
+
+Built-in defaults are a snapshot (USD / 1M tokens):
+
+- `gpt-4.1-mini`: input `0.40`, cached input `0.10`, output `1.60`
+- `gpt-5-mini`: input `0.25`, cached input `0.025`, output `2.00`
+- `gpt-5`: input `1.25`, cached input `0.125`, output `10.00`
+
+Use overrides whenever pricing changes.
