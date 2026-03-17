@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "changeling"
+name = "jelp"
 dynamic = ["version"]
-description = "Changeling - Speakright(TM) git log reality adjuster"
+description = "jelp: CLI introspection contract for LLM/tool use"
 requires-python= ">=3.14"
 readme = "README.md"
 license = "MIT"
@@ -36,22 +36,21 @@ doc = [
 examples = [
 ]
 extra = [
-    "changeling[examples]",
+    "jelp[examples]",
 ]
 test = [
     'pytest>=7.2',
     'pytest-cov>=4.0',
-    "changeling[examples]",
+    "jelp[examples]",
 ]
 all = [
-    "changeling[developer]",
-    "changeling[test]",
-    "changeling[extra]",
+    "jelp[developer]",
+    "jelp[test]",
+    "jelp[extra]",
 ]
 
 [project.scripts]
-changeling = "changeling.cli:main"
-cling = "changeling.cli:main"
+jelp = "jelp.cli:main"
 
 [tool.mypy]
 python_version = "3.14"
@@ -62,19 +61,19 @@ disallow_untyped_defs = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-addopts = "--cov=changeling --cov-report markdown"
+addopts = "--cov=jelp --cov-report markdown"
 filterwarnings = ["error"]
 
 [project.urls]
-Homepage = "https://github.com/scottvr/changeling"
-Repository = "https://github.com/scottvr/changeling.git"
-Issues = "https://github.com/scottvr/changeling/issues"
+Homepage = "https://github.com/scottvr/jelp"
+Repository = "https://github.com/scottvr/jelp.git"
+Issues = "https://github.com/scottvr/jelp/issues"
 
 [tool.hatch.version]
-path = "src/changeling/__init__.py"
+path = "src/jelp/__init__.py"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/changeling"]
+packages = ["src/jelp"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "B"]
