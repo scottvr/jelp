@@ -31,6 +31,9 @@ developer = [
     'isort',
     'ruff',
 ]
+ctf = [
+    'openai'
+]
 doc = [
 ]
 examples = [

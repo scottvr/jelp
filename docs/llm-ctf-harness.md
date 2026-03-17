@@ -1,0 +1,140 @@
+# LLM CTF Harness
+
+This harness evaluates whether machine-readable CLI introspection improves LLM tool use.
+
+## Goal
+
+Measure task success and efficiency across three modes:
+
+1. `help-only`: no jelp flags available
+2. `jelp-useful`: `--jelp` / `--jelp-pretty` available
+3. `jelp-no-meta`: `--jelp-no-meta` (and full-tree `--jelp-all-no-meta`) available
+
+Optional debug mode: `jelp-all`.
+
+## Scenario set
+
+Fixtures live in `ctf/fixtures/` and are intentionally unfamiliar CLIs. Each has a hidden success condition that prints one deterministic `FLAG{...}`.
+
+Current fixture count: 8.
+
+## Metrics captured
+
+Per scenario/mode run:
+
+- `success` (expected flag returned)
+- `command_count`
+- `invalid_command_count`
+- `parser_error_count`
+- `duration_s`
+- `time_to_success_s`
+
+Detailed command/stdio traces are written to a JSON log.
+
+## Run
+
+### Oracle smoke test (deterministic)
+
+```bash
+PYTHONPATH=src:. .venv/bin/python ctf/harness.py --adapter oracle --out ctf/results/oracle.json
+```
+
+### OpenAI-based naive LLM run
+
+Requires `OPENAI_API_KEY` and `openai` package.
+
+```bash
+PYTHONPATH=src:. .venv/bin/python ctf/harness.py \
+  --adapter openai \
+  --model gpt-4.1-mini \
+  --max-steps 12 \
+  --api-timeout-s 45 \
+  --response-max-output-tokens 500 \
+  --adapter-retries 1 \
+  --out ctf/results/openai-run.json
+```
+
+### Subset run
+
+```bash
+PYTHONPATH=src:. .venv/bin/python ctf/harness.py \
+  --adapter openai \
+  --scenario fixture01_vault \
+  --scenario fixture08_nested
+```
+
+### Live debug mode
+
+Shows step-by-step harness activity and raw model text responses.
+
+```bash
+PYTHONPATH=src:. .venv/bin/python ctf/harness.py \
+  --adapter openai \
+  --model gpt-4.1-mini \
+  --debug \
+  --api-timeout-s 45 \
+  --response-max-output-tokens 500 \
+  --adapter-retries 1 \
+  --max-steps 12
+```
+
+If your chosen model supports temperature, you can pass it:
+
+```bash
+... --temperature 0.2
+```
+
+If omitted, no temperature is sent (avoids model-compatibility issues).
+
+For GPT-5 family models that sometimes return empty or partial text, try:
+
+```bash
+--model gpt-5-mini --adapter-retries 2 --response-max-output-tokens 700
+```
+
+## Suggested evaluation protocol
+
+1. Run each mode with the same model and step budget.
+2. Compare:
+   - success uplift: `help-only` -> `jelp-useful`
+   - efficiency uplift: command_count/time/error reductions
+3. Check metadata value by comparing `jelp-useful` vs `jelp-no-meta`.
+4. Use `jelp-all` only as a diagnostic control for ambiguity or provenance debugging.
+
+## Notes on fairness
+
+- Harness policy disallows jelp flags in `help-only` mode.
+- In `jelp-no-meta` mode, metadata-bearing flags are rejected.
+- Commands must invoke fixture CLIs via `python ...`; non-CLI shell exploration is rejected for consistency.
+
+## Files
+
+- Runner: `ctf/harness.py`
+- Adapters: `ctf/adapters.py`
+- Scenarios: `ctf/scenarios.py`
+- Fixtures: `ctf/fixtures/*.py`
+- Results: `ctf/results/*.json`
+
+## Reporting
+
+After a harness run, compute mode-level and paired baseline deltas:
+
+```bash
+PYTHONPATH=src:. .venv/bin/python ctf/report.py --in ctf/results/openai-run.json
+```
+
+Defaults:
+
+- baseline: `help-only`
+- comparisons: `jelp-useful`, `jelp-no-meta`
+
+Override comparisons:
+
+```bash
+PYTHONPATH=src:. .venv/bin/python ctf/report.py \
+  --in ctf/results/openai-run.json \
+  --baseline help-only \
+  --compare jelp-useful \
+  --compare jelp-no-meta \
+  --compare jelp-all
+```

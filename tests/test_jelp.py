@@ -169,6 +169,8 @@ class JelpTests(unittest.TestCase):
                 "--jelp-pretty",
                 "--jelp-no-meta",
                 "--jelp-all",
+                "--jelp-all-commands",
+                "--jelp-all-no-meta",
             ],
         )
 
@@ -201,6 +203,8 @@ class JelpTests(unittest.TestCase):
                     "--jelp-pretty",
                     "--jelp-no-meta",
                     "--jelp-all",
+                    "--jelp-all-commands",
+                    "--jelp-all-no-meta",
                 ],
                 "commands": ["analyze", "notes", "review", "enrich"],
                 "command_options": {
@@ -297,6 +301,23 @@ class JelpTests(unittest.TestCase):
         scan_order_payload = json.loads(scan_order_stdout.getvalue())
         self.assertTrue(scan_order_payload["info"]["title"].endswith("scan"))
 
+        forced_full_stdout = StringIO()
+        with patch.object(
+            sys,
+            "argv",
+            ["mini", "scan", "--jelp", "--jelp-all-commands"],
+        ):
+            with redirect_stdout(forced_full_stdout):
+                with self.assertRaises(SystemExit) as exit_ctx:
+                    parser.parse_args()
+        self.assertEqual(exit_ctx.exception.code, 0)
+        forced_full_payload = json.loads(forced_full_stdout.getvalue())
+        self.assertEqual(forced_full_payload["info"]["title"], "mini")
+        self.assertEqual(
+            [command["name"] for command in forced_full_payload.get("commands", [])],
+            ["scan"],
+        )
+
         inverted_order_stdout = StringIO()
         with patch.object(sys, "argv", ["mini", "--jelp", "scan"]):
             with redirect_stdout(inverted_order_stdout):
@@ -373,6 +394,39 @@ class JelpTests(unittest.TestCase):
             json.loads(inverted_manual.getvalue())["info"]["title"].endswith("scan")
         )
 
+        all_commands_manual = StringIO()
+        handled_all_commands_manual = handle_jelp_flag(
+            parser,
+            ["scan", "--jelp-all-commands"],
+            version="0.0.1",
+            stream=all_commands_manual,
+        )
+        self.assertTrue(handled_all_commands_manual)
+        all_commands_payload = json.loads(all_commands_manual.getvalue())
+        self.assertEqual(all_commands_payload["info"]["title"], "mini")
+        self.assertEqual(
+            [command["name"] for command in all_commands_payload.get("commands", [])],
+            ["scan"],
+        )
+
+        all_no_meta_manual = StringIO()
+        handled_all_no_meta_manual = handle_jelp_flag(
+            parser,
+            ["scan", "--jelp-all-no-meta"],
+            version="0.0.1",
+            stream=all_no_meta_manual,
+        )
+        self.assertTrue(handled_all_no_meta_manual)
+        all_no_meta_payload = json.loads(all_no_meta_manual.getvalue())
+        self.assertEqual(all_no_meta_payload["info"]["title"], "mini")
+        self.assertNotIn("metadata", all_no_meta_payload)
+        self.assertTrue(
+            all(
+                "metadata" not in option
+                for option in all_no_meta_payload.get("options", [])
+            )
+        )
+
     def test_metadata_levels_useful_none_all(self) -> None:
         parser = self._fixture_parser()
         useful = emit_opencli(parser, version="1.2.3", metadata_level="useful")
@@ -412,7 +466,14 @@ class JelpTests(unittest.TestCase):
         injected_list = self._metadata_value(root_meta, "jelp.injected_options")
         self.assertEqual(
             injected_list,
-            ["--jelp", "--jelp-pretty", "--jelp-no-meta", "--jelp-all"],
+            [
+                "--jelp",
+                "--jelp-pretty",
+                "--jelp-no-meta",
+                "--jelp-all",
+                "--jelp-all-commands",
+                "--jelp-all-no-meta",
+            ],
         )
 
         options = {option["name"]: option for option in useful.get("options", [])}
@@ -453,6 +514,31 @@ class JelpTests(unittest.TestCase):
             entry["name"] for entry in verbose.get("metadata", [])
         }
         self.assertIn("argparse.dest", verbose_metadata_names)
+
+        all_commands_stdout = StringIO()
+        with redirect_stdout(all_commands_stdout):
+            rc = cli_main(["analyze", "--jelp-all-commands"])
+        self.assertEqual(rc, 0)
+        all_commands_payload = json.loads(all_commands_stdout.getvalue())
+        self.assertEqual(all_commands_payload["info"]["title"], "jelp")
+        self.assertEqual(
+            [command["name"] for command in all_commands_payload.get("commands", [])],
+            ["analyze", "notes", "review", "enrich"],
+        )
+
+        all_no_meta_stdout = StringIO()
+        with redirect_stdout(all_no_meta_stdout):
+            rc = cli_main(["analyze", "--jelp-all-no-meta"])
+        self.assertEqual(rc, 0)
+        all_no_meta_payload = json.loads(all_no_meta_stdout.getvalue())
+        self.assertEqual(all_no_meta_payload["info"]["title"], "jelp")
+        self.assertNotIn("metadata", all_no_meta_payload)
+        self.assertTrue(
+            all(
+                "metadata" not in option
+                for option in all_no_meta_payload.get("options", [])
+            )
+        )
 
     def test_emitted_json_answers_llm_discovery_questions(self) -> None:
         payload = emit_opencli(self._fixture_parser(), version="1.2.3")

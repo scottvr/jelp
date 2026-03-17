@@ -41,13 +41,20 @@ That is enough. `enable_jelp(...)` installs:
 - `--jelp-pretty` (indented JSON, useful metadata)
 - `--jelp-no-meta` (compact JSON, no metadata)
 - `--jelp-all` (compact JSON, full metadata)
+- `--jelp-all-commands` (compact JSON, useful metadata, full CLI tree)
+- `--jelp-all-no-meta` (compact JSON, no metadata, full CLI tree)
 
-When either flag is present, `parse_args()` emits JSON and exits with code `0`.
+When any `--jelp*` flag is present, `parse_args()` emits JSON and exits with code `0`.
 
 Default ordering is argparse-like:
 
 - `mytool subcommand --jelp` -> subcommand JSON
 - `mytool --jelp subcommand` -> root JSON
+
+For a guaranteed full-tree dump (regardless where the flag appears), use:
+
+- `mytool subcommand --jelp-all-commands`
+- `mytool subcommand --jelp-all-no-meta`
 
 If you want inverted-order compatibility, opt in:
 
@@ -137,6 +144,15 @@ See:
 
 - [docs/v0-decisions.md](docs/v0-decisions.md)
 - [docs/opencli-feedback-examples.md](docs/opencli-feedback-examples.md)
+- [docs/llm-ctf-harness.md](docs/llm-ctf-harness.md)
+- [docs/task-tracker.md](docs/task-tracker.md)
+- [docs/task-tracker-roadmap.md](docs/task-tracker-roadmap.md)
+
+Quick harness smoke test:
+
+```bash
+PYTHONPATH=src:. .venv/bin/python ctf/harness.py --adapter oracle --out ctf/results/oracle.json
+```
 
 ## Why this project exists
 

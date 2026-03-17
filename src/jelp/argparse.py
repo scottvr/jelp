@@ -224,12 +224,18 @@ def enable_jelp(
     pretty_flag: str = "--jelp-pretty",
     no_meta_flag: str = "--jelp-no-meta",
     all_flag: str = "--jelp-all",
+    all_commands_flag: str = "--jelp-all-commands",
+    all_no_meta_flag: str = "--jelp-all-no-meta",
     auto_handle: bool = True,
     allow_inverted_order: bool = False,
     help_text: str = "Emit OpenCLI JSON and exit.",
     pretty_help_text: str = "Emit pretty OpenCLI JSON and exit.",
     no_meta_help_text: str = "Emit OpenCLI JSON without metadata and exit.",
     all_help_text: str = "Emit OpenCLI JSON with all metadata and exit.",
+    all_commands_help_text: str = "Emit full CLI OpenCLI JSON and exit.",
+    all_no_meta_help_text: str = (
+        "Emit full CLI OpenCLI JSON without metadata and exit."
+    ),
 ) -> argparse.ArgumentParser:
     emit_version = (
         str(getattr(parser, "jelp_version", "0.0.0")) if version is None else version
@@ -247,8 +253,11 @@ def enable_jelp(
                 pretty_flag=pretty_flag,
                 no_meta_flag=no_meta_flag,
                 all_flag=all_flag,
+                all_commands_flag=all_commands_flag,
+                all_no_meta_flag=all_no_meta_flag,
                 metadata_level="useful",
                 allow_inverted_order=allow_inverted_order,
+                force_all_commands=False,
             )
             pretty_action = _make_jelp_emit_action(
                 owner_parser=target_parser,
@@ -260,8 +269,11 @@ def enable_jelp(
                 pretty_flag=pretty_flag,
                 no_meta_flag=no_meta_flag,
                 all_flag=all_flag,
+                all_commands_flag=all_commands_flag,
+                all_no_meta_flag=all_no_meta_flag,
                 metadata_level="useful",
                 allow_inverted_order=allow_inverted_order,
+                force_all_commands=False,
             )
             no_meta_action = _make_jelp_emit_action(
                 owner_parser=target_parser,
@@ -273,8 +285,11 @@ def enable_jelp(
                 pretty_flag=pretty_flag,
                 no_meta_flag=no_meta_flag,
                 all_flag=all_flag,
+                all_commands_flag=all_commands_flag,
+                all_no_meta_flag=all_no_meta_flag,
                 metadata_level="none",
                 allow_inverted_order=allow_inverted_order,
+                force_all_commands=False,
             )
             all_action = _make_jelp_emit_action(
                 owner_parser=target_parser,
@@ -286,14 +301,51 @@ def enable_jelp(
                 pretty_flag=pretty_flag,
                 no_meta_flag=no_meta_flag,
                 all_flag=all_flag,
+                all_commands_flag=all_commands_flag,
+                all_no_meta_flag=all_no_meta_flag,
                 metadata_level="all",
                 allow_inverted_order=allow_inverted_order,
+                force_all_commands=False,
+            )
+            all_commands_action = _make_jelp_emit_action(
+                owner_parser=target_parser,
+                root_parser=parser,
+                version=emit_version,
+                opencli_version=opencli_version,
+                pretty=False,
+                flag=flag,
+                pretty_flag=pretty_flag,
+                no_meta_flag=no_meta_flag,
+                all_flag=all_flag,
+                all_commands_flag=all_commands_flag,
+                all_no_meta_flag=all_no_meta_flag,
+                metadata_level="useful",
+                allow_inverted_order=allow_inverted_order,
+                force_all_commands=True,
+            )
+            all_no_meta_action = _make_jelp_emit_action(
+                owner_parser=target_parser,
+                root_parser=parser,
+                version=emit_version,
+                opencli_version=opencli_version,
+                pretty=False,
+                flag=flag,
+                pretty_flag=pretty_flag,
+                no_meta_flag=no_meta_flag,
+                all_flag=all_flag,
+                all_commands_flag=all_commands_flag,
+                all_no_meta_flag=all_no_meta_flag,
+                metadata_level="none",
+                allow_inverted_order=allow_inverted_order,
+                force_all_commands=True,
             )
         else:
             action = "store_true"
             pretty_action = "store_true"
             no_meta_action = "store_true"
             all_action = "store_true"
+            all_commands_action = "store_true"
+            all_no_meta_action = "store_true"
 
         if flag not in target_parser._option_string_actions:
             added = target_parser.add_argument(flag, action=action, help=help_text)
@@ -317,6 +369,20 @@ def enable_jelp(
                 help=all_help_text,
             )
             _mark_jelp_injected_option(target_parser, added)
+        if all_commands_flag not in target_parser._option_string_actions:
+            added = target_parser.add_argument(
+                all_commands_flag,
+                action=all_commands_action,
+                help=all_commands_help_text,
+            )
+            _mark_jelp_injected_option(target_parser, added)
+        if all_no_meta_flag not in target_parser._option_string_actions:
+            added = target_parser.add_argument(
+                all_no_meta_flag,
+                action=all_no_meta_action,
+                help=all_no_meta_help_text,
+            )
+            _mark_jelp_injected_option(target_parser, added)
     return parser
 
 
@@ -330,6 +396,8 @@ def handle_jelp_flag(
     pretty_flag: str = "--jelp-pretty",
     no_meta_flag: str = "--jelp-no-meta",
     all_flag: str = "--jelp-all",
+    all_commands_flag: str = "--jelp-all-commands",
+    all_no_meta_flag: str = "--jelp-all-no-meta",
     allow_inverted_order: bool = False,
     stream: Any = None,
 ) -> bool:
@@ -338,24 +406,46 @@ def handle_jelp_flag(
     wants_pretty = pretty_flag in args
     wants_no_meta = no_meta_flag in args
     wants_all = all_flag in args
-    if not wants_compact and not wants_pretty and not wants_no_meta and not wants_all:
+    wants_all_commands = all_commands_flag in args
+    wants_all_no_meta = all_no_meta_flag in args
+    if (
+        not wants_compact
+        and not wants_pretty
+        and not wants_no_meta
+        and not wants_all
+        and not wants_all_commands
+        and not wants_all_no_meta
+    ):
         return False
-    jelp_flags = {flag, pretty_flag, no_meta_flag, all_flag}
-    if allow_inverted_order:
-        target_parser = _resolve_target_parser_from_argv(
-            parser,
-            args,
-            jelp_flags=jelp_flags,
-        )
-    else:
-        target_parser = _resolve_target_parser_strict(
-            parser,
-            args,
-            jelp_flags=jelp_flags,
-        )
+    jelp_flags = {
+        flag,
+        pretty_flag,
+        no_meta_flag,
+        all_flag,
+        all_commands_flag,
+        all_no_meta_flag,
+    }
+    force_all_commands = wants_all_commands or wants_all_no_meta
+    target_parser = parser
+    if not force_all_commands:
+        if allow_inverted_order:
+            target_parser = _resolve_target_parser_from_argv(
+                parser,
+                args,
+                jelp_flags=jelp_flags,
+            )
+        else:
+            target_parser = _resolve_target_parser_strict(
+                parser,
+                args,
+                jelp_flags=jelp_flags,
+            )
     metadata_level: MetadataLevel = "useful"
     pretty = wants_pretty
-    if wants_all:
+    if wants_all_no_meta:
+        metadata_level = "none"
+        pretty = False
+    elif wants_all:
         metadata_level = "all"
         pretty = False
     elif wants_no_meta:
@@ -384,8 +474,11 @@ def _make_jelp_emit_action(
     pretty_flag: str,
     no_meta_flag: str,
     all_flag: str,
+    all_commands_flag: str,
+    all_no_meta_flag: str,
     metadata_level: MetadataLevel,
     allow_inverted_order: bool,
+    force_all_commands: bool,
 ) -> type[argparse.Action]:
     class _JelpEmitAction(argparse.Action):
         def __init__(self, option_strings: list[str], dest: str, **kwargs: Any) -> None:
@@ -401,9 +494,23 @@ def _make_jelp_emit_action(
         ) -> None:
             del namespace, values, option_string
             target_parser = owner_parser
-            if owner_parser is root_parser:
-                argv = list(sys.argv[1:])
-                jelp_flags = {flag, pretty_flag, no_meta_flag, all_flag}
+            argv = list(sys.argv[1:])
+            force_all_commands_effective = (
+                force_all_commands
+                or (all_commands_flag in argv)
+                or (all_no_meta_flag in argv)
+            )
+            if force_all_commands_effective:
+                target_parser = root_parser
+            elif owner_parser is root_parser:
+                jelp_flags = {
+                    flag,
+                    pretty_flag,
+                    no_meta_flag,
+                    all_flag,
+                    all_commands_flag,
+                    all_no_meta_flag,
+                }
                 if allow_inverted_order:
                     target_parser = _resolve_target_parser_from_argv(
                         root_parser,
