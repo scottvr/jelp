@@ -4,7 +4,7 @@
 
 This repo is an early, practical v0 focused on native parser introspection.
 
-Also included in this repo is an evaluation harness designed to perform a cost-benefit analysis on LLM tool-use via naive cli `--help` queries vs the same usage, with the LLM given information about the CLI in a JSON object conforming to an OpenCLI schema. It takes the shape of a [CTF challenge](https://github.com/scottvr/jelp/blob/main/docs/llm-ctf-harness.md) with deterministic flags and meaningfully measurable outcomes.
+Also included in this repo is an evaluation harness designed to perform a cost-benefit analysis on LLM tool-use via naive cli `--help` queries vs the same usage, with the LLM given information about the CLI in a JSON object conforming to an OpenCLI schema. It takes the shape of a [CTF challenge](docs/llm-ctf-harness.md) with deterministic flags and meaningfully measurable outcomes.
 
 ## Status
 
