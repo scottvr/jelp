@@ -4,28 +4,48 @@
 
 This repo is an early, practical v0 focused on native parser introspection.
 
-Also included in this repo is an evaluation harness designed to perform a cost-benefit analysis on LLM tool-use via naive cli `--help` queries vs the same usage, with the LLM given information about the CLI in a JSON object conforming to an OpenCLI schema. It takes the shape of a [CTF challenge](docs/llm-ctf-harness.md) with deterministic flags and meaningfully measurable outcomes.
+Also included in this repo is an evaluation harness designed to perform a cost-benefit analysis on LLM tool-use via naive cli `--help` queries vs the same usage, with the LLM given information about the CLI in a JSON object conforming to an OpenCLI schema. It takes the shape of a [CTF challenge](docs/llm-ctf-harness.md) with deterministic flags and meaningfully measurable outcomes. If you're only here for the current results, here's the general gist of it:
 
-## Status
+### Cost adjustment impact
+
+| scope        | raw_verdict_no_cost                   | cost_adjusted_verdict                 | changed_by_cost | token_ratio_obs | token_ratio_threshold | reason |
+| ------------ | ------------------------------------- | ------------------------------------- | --------------- | --------------: | --------------------: | ------ |
+| gpt-4.1-mini | No net benefit currently              | No net benefit currently              | no              |           2.361 |                  1.75 | -      |
+| gpt-5-mini   | Net benefit now                       | Net benefit now                       | no              |           1.150 |                  1.75 | -      |
+| all-models   | Promising, strategy adjustment needed | Promising, strategy adjustment needed | no              |           1.608 |                  1.75 | -      |
+
+This table comes from the [generated CTF harness run report](ctf/results/confirmatory-decision.md).
+
+----
+
+## jelp status
 
 - Version: `0.0.1` (experimental)
 - Primary target: Python `argparse`
 - Output shape: OpenCLI draft-compatible JSON
 - Non-OpenCLI semantics are preserved in `metadata` (for example `count`, `append`, mutually-exclusive groups)
 
-## Install
+## Install jelp
+
+clone the repo, then:
 
 ```bash
-pip install jelp
+cd jelp
+pip install -e .'[all]'
 ```
 
-For local development:
+### Install CTF harness
+
+Then, if you're interested in the CTF harness:
 
 ```bash
-pip install -e .
+pip install -e .'[ctf]'
 ```
 
-## Quick Start (Existing argparse App)
+Most of what you'll want for this is in the ctf/ directory, but to replay exactly what I did to generate the current results, you'll find that in the file `llm-ctf-bench.sh`.
+
+
+## Development Quick Start (Existing argparse App)
 
 ### One-line enablement (recommended)
 
