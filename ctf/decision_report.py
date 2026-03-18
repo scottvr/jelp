@@ -20,6 +20,10 @@ VERDICT_NO_NET = "No net benefit currently"
 VERDICT_INSUFFICIENT = "Insufficient evidence"
 VERDICT_MODEL_SENSITIVE = "model-sensitive / not yet general"
 
+SUCCESS_DELTA_THRESHOLD = 0.0
+MEDIAN_CMD_DELTA_THRESHOLD = -0.5
+TOKEN_RATIO_THRESHOLD = 1.75
+
 
 @dataclass(frozen=True)
 class SummaryRow:
@@ -59,6 +63,15 @@ class DecisionMetrics:
     token_ratio_ci_high: float
     ci_favorable: bool
     verdict: str
+
+
+@dataclass(frozen=True)
+class PairAccounting:
+    observed_pairs: int
+    expected_pairs: int
+    pair_coverage: float
+    baseline_only: int
+    candidate_only: int
 
 
 def _as_int(value: object, *, default: int = 0) -> int:
@@ -125,7 +138,7 @@ def _paired_rows(
     pair_keys: set[tuple[str, str, int, str]] = set()
 
     for row in rows:
-        pair_key = (row.model, row.run_id, row.iteration, row.scenario_id)
+        pair_key = _pair_key(row)
         pair_keys.add(pair_key)
         by_pair_mode[
             (row.model, row.run_id, row.iteration, row.scenario_id, row.mode)
@@ -138,6 +151,29 @@ def _paired_rows(
         if base is not None and comp is not None:
             paired.append((base, comp))
     return paired
+
+
+def _pair_key(row: SummaryRow) -> tuple[str, str, int, str]:
+    return (row.model, row.run_id, row.iteration, row.scenario_id)
+
+
+def _pair_accounting(
+    rows: list[SummaryRow], *, baseline: str, candidate: str
+) -> PairAccounting:
+    baseline_keys = {_pair_key(row) for row in rows if row.mode == baseline}
+    candidate_keys = {_pair_key(row) for row in rows if row.mode == candidate}
+    observed_pairs = len(baseline_keys & candidate_keys)
+    expected_pairs = len(baseline_keys | candidate_keys)
+    pair_coverage = (
+        float("nan") if expected_pairs == 0 else observed_pairs / expected_pairs
+    )
+    return PairAccounting(
+        observed_pairs=observed_pairs,
+        expected_pairs=expected_pairs,
+        pair_coverage=pair_coverage,
+        baseline_only=len(baseline_keys - candidate_keys),
+        candidate_only=len(candidate_keys - baseline_keys),
+    )
 
 
 def _quantile(values: list[float], q: float) -> float:
@@ -236,11 +272,37 @@ def classify_verdict(
     ):
         return VERDICT_INSUFFICIENT
 
-    if success_delta_pp < 0 or median_cmd_delta >= 0:
+    if success_delta_pp < SUCCESS_DELTA_THRESHOLD or median_cmd_delta >= 0:
         return VERDICT_NO_NET
 
-    if success_delta_pp >= 0 and median_cmd_delta <= -0.5:
-        if token_ratio <= 1.75 and ci_favorable:
+    if (
+        success_delta_pp >= SUCCESS_DELTA_THRESHOLD
+        and median_cmd_delta <= MEDIAN_CMD_DELTA_THRESHOLD
+    ):
+        if token_ratio <= TOKEN_RATIO_THRESHOLD and ci_favorable:
+            return VERDICT_NET_BENEFIT
+        return VERDICT_PROMISING
+
+    return VERDICT_NO_NET
+
+
+def classify_raw_verdict(
+    *,
+    success_delta_pp: float,
+    median_cmd_delta: float,
+    ci_favorable: bool,
+) -> str:
+    if math.isnan(success_delta_pp) or math.isnan(median_cmd_delta):
+        return VERDICT_INSUFFICIENT
+
+    if success_delta_pp < SUCCESS_DELTA_THRESHOLD or median_cmd_delta >= 0:
+        return VERDICT_NO_NET
+
+    if (
+        success_delta_pp >= SUCCESS_DELTA_THRESHOLD
+        and median_cmd_delta <= MEDIAN_CMD_DELTA_THRESHOLD
+    ):
+        if ci_favorable:
             return VERDICT_NET_BENEFIT
         return VERDICT_PROMISING
 
@@ -284,7 +346,10 @@ def _decision_metrics(
         samples=bootstrap_samples,
         seed=seed,
     )
-    ci_favorable = success_ci_low >= 0.0 and cmd_ci_high <= -0.5
+    ci_favorable = (
+        success_ci_low >= SUCCESS_DELTA_THRESHOLD
+        and cmd_ci_high <= MEDIAN_CMD_DELTA_THRESHOLD
+    )
 
     return DecisionMetrics(
         pair_count=len(pairs),
@@ -307,10 +372,171 @@ def _decision_metrics(
     )
 
 
+def _raw_verdict_from_metrics(metrics: DecisionMetrics) -> str:
+    return classify_raw_verdict(
+        success_delta_pp=metrics.success_delta_pp,
+        median_cmd_delta=metrics.median_cmd_delta,
+        ci_favorable=metrics.ci_favorable,
+    )
+
+
+def _cost_adjustment_impact(
+    metrics: DecisionMetrics,
+) -> tuple[str, bool, str | None]:
+    raw_verdict = _raw_verdict_from_metrics(metrics)
+    changed = raw_verdict != metrics.verdict
+    if not changed:
+        return raw_verdict, False, None
+    if (
+        raw_verdict == VERDICT_NET_BENEFIT
+        and metrics.verdict == VERDICT_PROMISING
+        and metrics.token_ratio > TOKEN_RATIO_THRESHOLD
+    ):
+        return (
+            raw_verdict,
+            True,
+            f"token_ratio_obs > {TOKEN_RATIO_THRESHOLD:.2f}",
+        )
+    return raw_verdict, True, "cost-adjusted thresholds changed classification"
+
+
 def _safe_number(value: float) -> float | None:
     if math.isnan(value) or math.isinf(value):
         return None
     return value
+
+
+def _ci_width(low: float, high: float) -> float:
+    if math.isnan(low) or math.isnan(high) or math.isinf(low) or math.isinf(high):
+        return float("nan")
+    return high - low
+
+
+def _contains_threshold(low: float, high: float, threshold: float) -> bool:
+    if math.isnan(low) or math.isnan(high) or math.isinf(low) or math.isinf(high):
+        return False
+    lower = min(low, high)
+    upper = max(low, high)
+    return lower <= threshold <= upper
+
+
+def _is_borderline(metrics: DecisionMetrics) -> bool:
+    return (
+        _contains_threshold(
+            metrics.success_ci_low,
+            metrics.success_ci_high,
+            SUCCESS_DELTA_THRESHOLD,
+        )
+        or _contains_threshold(
+            metrics.cmd_ci_low,
+            metrics.cmd_ci_high,
+            MEDIAN_CMD_DELTA_THRESHOLD,
+        )
+        or _contains_threshold(
+            metrics.token_ratio_ci_low,
+            metrics.token_ratio_ci_high,
+            TOKEN_RATIO_THRESHOLD,
+        )
+    )
+
+
+def _borderline_reasons(metrics: DecisionMetrics) -> list[str]:
+    reasons: list[str] = []
+    if _contains_threshold(
+        metrics.success_ci_low,
+        metrics.success_ci_high,
+        SUCCESS_DELTA_THRESHOLD,
+    ):
+        reasons.append(f"success_ci includes threshold {SUCCESS_DELTA_THRESHOLD:.1f}pp")
+    if _contains_threshold(
+        metrics.cmd_ci_low,
+        metrics.cmd_ci_high,
+        MEDIAN_CMD_DELTA_THRESHOLD,
+    ):
+        reasons.append(
+            f"median_cmd_ci includes threshold {MEDIAN_CMD_DELTA_THRESHOLD:.1f}"
+        )
+    if _contains_threshold(
+        metrics.token_ratio_ci_low,
+        metrics.token_ratio_ci_high,
+        TOKEN_RATIO_THRESHOLD,
+    ):
+        reasons.append(f"token_ratio_ci includes threshold {TOKEN_RATIO_THRESHOLD:.2f}")
+    return reasons
+
+
+def _pass_fail(condition: bool) -> str:
+    return "pass" if condition else "fail"
+
+
+def _decision_driver_lines(
+    *,
+    label: str,
+    metrics: DecisionMetrics,
+    accounting: PairAccounting,
+    include_label_line: bool = True,
+) -> list[str]:
+    observed_success_ok = metrics.success_delta_pp >= SUCCESS_DELTA_THRESHOLD
+    observed_cmd_ok = metrics.median_cmd_delta <= MEDIAN_CMD_DELTA_THRESHOLD
+    observed_token_ok = metrics.token_ratio <= TOKEN_RATIO_THRESHOLD
+    ci_success_ok = metrics.success_ci_low >= SUCCESS_DELTA_THRESHOLD
+    ci_cmd_ok = metrics.cmd_ci_high <= MEDIAN_CMD_DELTA_THRESHOLD
+    borderline = _is_borderline(metrics)
+    borderline_reasons = _borderline_reasons(metrics)
+    reason_suffix = f" ({'; '.join(borderline_reasons)})" if borderline_reasons else ""
+    lines: list[str] = []
+    if include_label_line:
+        lines.append(
+            f"- `{label}`: observed pairs `{accounting.observed_pairs}/{accounting.expected_pairs}` (coverage `{_fmt_pct(accounting.pair_coverage)}`)"
+        )
+    else:
+        lines.append(
+            f"- observed pairs `{accounting.observed_pairs}/{accounting.expected_pairs}` (coverage `{_fmt_pct(accounting.pair_coverage)}`)"
+        )
+    lines.extend(
+        [
+            (
+                f"- `success_delta_pp_obs={_fmt(metrics.success_delta_pp)}` vs threshold `>= {SUCCESS_DELTA_THRESHOLD:.1f}`: "
+                f"`{_pass_fail(observed_success_ok)}`; `success_ci_boot=[{_fmt(metrics.success_ci_low)}, {_fmt(metrics.success_ci_high)}]`"
+            ),
+            (
+                f"- `median_cmd_delta_obs={_fmt(metrics.median_cmd_delta)}` vs threshold `<= {MEDIAN_CMD_DELTA_THRESHOLD:.1f}`: "
+                f"`{_pass_fail(observed_cmd_ok)}`; `median_cmd_ci_boot=[{_fmt(metrics.cmd_ci_low)}, {_fmt(metrics.cmd_ci_high)}]`"
+            ),
+            (
+                f"- `token_ratio_obs={_fmt(metrics.token_ratio)}` vs threshold `<= {TOKEN_RATIO_THRESHOLD:.2f}`: "
+                f"`{_pass_fail(observed_token_ok)}`; `token_ratio_ci_boot=[{_fmt(metrics.token_ratio_ci_low)}, {_fmt(metrics.token_ratio_ci_high)}]`"
+            ),
+            (
+                f"- `ci_favorable` gate (`success_ci_low >= {SUCCESS_DELTA_THRESHOLD:.1f}` and "
+                f"`cmd_ci_high <= {MEDIAN_CMD_DELTA_THRESHOLD:.1f}`): "
+                f"`{_pass_fail(ci_success_ok and ci_cmd_ok)}` "
+                f"(success part: `{_pass_fail(ci_success_ok)}`, command part: `{_pass_fail(ci_cmd_ok)}`)"
+            ),
+            f"- `borderline`: `{'yes' if borderline else 'no'}`{reason_suffix}",
+            f"- Derived verdict: `{metrics.verdict}`",
+        ]
+    )
+    return lines
+
+
+def _cost_impact_row(label: str, *, metrics: DecisionMetrics) -> str:
+    raw_verdict, changed, reason = _cost_adjustment_impact(metrics)
+    return (
+        "| "
+        + " | ".join(
+            [
+                label,
+                raw_verdict,
+                metrics.verdict,
+                "yes" if changed else "no",
+                _fmt(metrics.token_ratio),
+                f"{TOKEN_RATIO_THRESHOLD:.2f}",
+                reason or "-",
+            ]
+        )
+        + " |"
+    )
 
 
 def _mode_summary_to_dict(summary: ModeSummary) -> dict[str, float | int | None]:
@@ -325,7 +551,17 @@ def _mode_summary_to_dict(summary: ModeSummary) -> dict[str, float | int | None]
 
 
 def _decision_to_dict(metrics: DecisionMetrics) -> dict[str, object]:
+    success_ci_width = _ci_width(metrics.success_ci_low, metrics.success_ci_high)
+    cmd_ci_width = _ci_width(metrics.cmd_ci_low, metrics.cmd_ci_high)
+    token_ratio_ci_width = _ci_width(
+        metrics.token_ratio_ci_low, metrics.token_ratio_ci_high
+    )
+    borderline = _is_borderline(metrics)
+    raw_verdict, cost_adjustment_changed, cost_adjustment_reason = (
+        _cost_adjustment_impact(metrics)
+    )
     return {
+        # Back-compat keys:
         "pair_count": metrics.pair_count,
         "success_delta_pp": _safe_number(metrics.success_delta_pp),
         "median_cmd_delta": _safe_number(metrics.median_cmd_delta),
@@ -342,8 +578,42 @@ def _decision_to_dict(metrics: DecisionMetrics) -> dict[str, object]:
             _safe_number(metrics.token_ratio_ci_low),
             _safe_number(metrics.token_ratio_ci_high),
         ],
+        # Provenance-explicit keys:
+        "success_delta_pp_obs": _safe_number(metrics.success_delta_pp),
+        "median_cmd_delta_obs": _safe_number(metrics.median_cmd_delta),
+        "token_ratio_obs": _safe_number(metrics.token_ratio),
+        "success_ci_boot": [
+            _safe_number(metrics.success_ci_low),
+            _safe_number(metrics.success_ci_high),
+        ],
+        "median_cmd_ci_boot": [
+            _safe_number(metrics.cmd_ci_low),
+            _safe_number(metrics.cmd_ci_high),
+        ],
+        "token_ratio_ci_boot": [
+            _safe_number(metrics.token_ratio_ci_low),
+            _safe_number(metrics.token_ratio_ci_high),
+        ],
+        "success_ci_width_pp": _safe_number(success_ci_width),
+        "median_cmd_ci_width": _safe_number(cmd_ci_width),
+        "token_ratio_ci_width": _safe_number(token_ratio_ci_width),
+        "borderline": borderline,
+        "raw_verdict_no_cost": raw_verdict,
+        "cost_adjusted_verdict": metrics.verdict,
+        "cost_adjustment_changed": cost_adjustment_changed,
+        "cost_adjustment_reason": cost_adjustment_reason,
         "ci_favorable": metrics.ci_favorable,
         "verdict": metrics.verdict,
+    }
+
+
+def _pair_accounting_to_dict(accounting: PairAccounting) -> dict[str, object]:
+    return {
+        "observed_pairs_used": accounting.observed_pairs,
+        "expected_pairs": accounting.expected_pairs,
+        "pair_coverage": _safe_number(accounting.pair_coverage),
+        "baseline_only": accounting.baseline_only,
+        "candidate_only": accounting.candidate_only,
     }
 
 
@@ -365,18 +635,33 @@ def _fmt_pct(value: float) -> str:
     return f"{value:.1%}"
 
 
-def _mode_table(mode_stats: dict[str, ModeSummary]) -> list[str]:
+def _annotated_mode_label(*, mode: str, baseline: str, candidate: str) -> str:
+    if mode == baseline and mode == candidate:
+        return f"(B/C) {mode}"
+    if mode == baseline:
+        return f"(B) {mode}"
+    if mode == candidate:
+        return f"(C) {mode}"
+    return mode
+
+
+def _mode_table(
+    mode_stats: dict[str, ModeSummary], *, baseline: str, candidate: str
+) -> list[str]:
     lines = [
         "| mode | n | success | mean_cmds | median_cmds | mean_errors | mean_total_tok |",
         "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for mode in sorted(mode_stats):
         row = mode_stats[mode]
+        mode_label = _annotated_mode_label(
+            mode=mode, baseline=baseline, candidate=candidate
+        )
         lines.append(
             "| "
             + " | ".join(
                 [
-                    mode,
+                    mode_label,
                     str(row.n),
                     _fmt_pct(row.success_rate),
                     _fmt(row.mean_cmds),
@@ -390,20 +675,38 @@ def _mode_table(mode_stats: dict[str, ModeSummary]) -> list[str]:
     return lines
 
 
-def _decision_row(label: str, metrics: DecisionMetrics) -> str:
+def _decision_row(
+    label: str,
+    *,
+    metrics: DecisionMetrics,
+    accounting: PairAccounting,
+) -> str:
     success_ci = f"[{_fmt(metrics.success_ci_low)}, {_fmt(metrics.success_ci_high)}]"
     cmd_ci = f"[{_fmt(metrics.cmd_ci_low)}, {_fmt(metrics.cmd_ci_high)}]"
+    token_ci = (
+        f"[{_fmt(metrics.token_ratio_ci_low)}, {_fmt(metrics.token_ratio_ci_high)}]"
+    )
+    borderline = _is_borderline(metrics)
     return (
         "| "
         + " | ".join(
             [
                 label,
-                str(metrics.pair_count),
+                str(accounting.observed_pairs),
+                str(accounting.expected_pairs),
+                _fmt_pct(accounting.pair_coverage),
                 _fmt(metrics.success_delta_pp),
                 _fmt(metrics.median_cmd_delta),
                 _fmt(metrics.token_ratio),
                 success_ci,
                 cmd_ci,
+                token_ci,
+                _fmt(_ci_width(metrics.success_ci_low, metrics.success_ci_high)),
+                _fmt(_ci_width(metrics.cmd_ci_low, metrics.cmd_ci_high)),
+                _fmt(
+                    _ci_width(metrics.token_ratio_ci_low, metrics.token_ratio_ci_high)
+                ),
+                "yes" if borderline else "no",
                 "yes" if metrics.ci_favorable else "no",
                 metrics.verdict,
             ]
@@ -417,10 +720,18 @@ def _render_markdown(
     baseline: str,
     candidate: str,
     ci_level: float,
+    bootstrap_samples: int,
+    base_seed: int,
+    model_seeds: dict[str, int],
+    pooled_seed: int,
     model_mode_stats: dict[str, dict[str, ModeSummary]],
+    model_accounting: dict[str, PairAccounting],
     pooled_mode_stats: dict[str, ModeSummary],
+    pooled_accounting: PairAccounting,
     model_metrics: dict[str, DecisionMetrics],
     pooled_metrics: DecisionMetrics,
+    model_driver_lines: dict[str, list[str]],
+    pooled_driver_lines: list[str],
     final_statement: str,
 ) -> str:
     ci_percent = int(round(ci_level * 100))
@@ -430,6 +741,16 @@ def _render_markdown(
         f"- Baseline: `{baseline}`",
         f"- Candidate: `{candidate}`",
         f"- Confidence interval: `{ci_percent}%` bootstrap",
+        f"- Bootstrap samples: `{bootstrap_samples}`",
+        f"- Base seed: `{base_seed}`",
+        "",
+        "Interpretation note:",
+        "- Columns ending in `_obs` come directly from observed paired runs.",
+        "- Columns ending in `_ci_boot` are bootstrap uncertainty estimates.",
+        (
+            "- `borderline=yes` means at least one bootstrap CI interval crosses a "
+            "decision threshold, so classification may be sensitive to modest variation."
+        ),
         "",
         "## Per-model mode summary",
         "",
@@ -437,7 +758,13 @@ def _render_markdown(
 
     for model in sorted(model_mode_stats):
         lines.append(f"### {model}")
-        lines.extend(_mode_table(model_mode_stats[model]))
+        lines.extend(
+            _mode_table(
+                model_mode_stats[model],
+                baseline=baseline,
+                candidate=candidate,
+            )
+        )
         lines.append("")
 
     lines.extend(
@@ -446,32 +773,119 @@ def _render_markdown(
             "",
         ]
     )
-    lines.extend(_mode_table(pooled_mode_stats))
+    lines.extend(
+        _mode_table(
+            pooled_mode_stats,
+            baseline=baseline,
+            candidate=candidate,
+        )
+    )
+    lines.extend(
+        [
+            "",
+            "## Evidence accounting",
+            "",
+            "| scope | observed_pairs_used | expected_pairs | pair_coverage | baseline_only | candidate_only | bootstrap_samples | seed |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        ]
+    )
+    for model in sorted(model_metrics):
+        accounting = model_accounting[model]
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    model,
+                    str(accounting.observed_pairs),
+                    str(accounting.expected_pairs),
+                    _fmt_pct(accounting.pair_coverage),
+                    str(accounting.baseline_only),
+                    str(accounting.candidate_only),
+                    str(bootstrap_samples),
+                    str(model_seeds[model]),
+                ]
+            )
+            + " |"
+        )
+    lines.append(
+        "| "
+        + " | ".join(
+            [
+                "all-models",
+                str(pooled_accounting.observed_pairs),
+                str(pooled_accounting.expected_pairs),
+                _fmt_pct(pooled_accounting.pair_coverage),
+                str(pooled_accounting.baseline_only),
+                str(pooled_accounting.candidate_only),
+                str(bootstrap_samples),
+                str(pooled_seed),
+            ]
+        )
+        + " |"
+    )
+
     lines.extend(
         [
             "",
             "## Per-model decision metrics",
             "",
-            "| model | pairs | success_delta_pp | median_cmd_delta | token_ratio | success_ci | median_cmd_ci | ci_favorable | verdict |",
-            "| --- | ---: | ---: | ---: | ---: | --- | --- | --- | --- |",
+            "| model | observed_pairs_used | expected_pairs | pair_coverage | success_delta_pp_obs | median_cmd_delta_obs | token_ratio_obs | success_ci_boot | median_cmd_ci_boot | token_ratio_ci_boot | success_ci_width | median_cmd_ci_width | token_ratio_ci_width | borderline | ci_favorable | verdict |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | ---: | ---: | ---: | --- | --- | --- |",
         ]
     )
     for model in sorted(model_metrics):
-        lines.append(_decision_row(model, model_metrics[model]))
+        lines.append(
+            _decision_row(
+                model,
+                metrics=model_metrics[model],
+                accounting=model_accounting[model],
+            )
+        )
 
     lines.extend(
         [
             "",
             "## Pooled decision metrics",
             "",
-            "| scope | pairs | success_delta_pp | median_cmd_delta | token_ratio | success_ci | median_cmd_ci | ci_favorable | verdict |",
-            "| --- | ---: | ---: | ---: | ---: | --- | --- | --- | --- |",
-            _decision_row("all-models", pooled_metrics),
+            "| scope | observed_pairs_used | expected_pairs | pair_coverage | success_delta_pp_obs | median_cmd_delta_obs | token_ratio_obs | success_ci_boot | median_cmd_ci_boot | token_ratio_ci_boot | success_ci_width | median_cmd_ci_width | token_ratio_ci_width | borderline | ci_favorable | verdict |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | ---: | ---: | ---: | --- | --- | --- |",
+            _decision_row(
+                "all-models",
+                metrics=pooled_metrics,
+                accounting=pooled_accounting,
+            ),
+            "",
+            "## Cost adjustment impact",
+            "",
+            "| scope | raw_verdict_no_cost | cost_adjusted_verdict | changed_by_cost | token_ratio_obs | token_ratio_threshold | reason |",
+            "| --- | --- | --- | --- | ---: | ---: | --- |",
+        ]
+    )
+    for model in sorted(model_metrics):
+        lines.append(_cost_impact_row(model, metrics=model_metrics[model]))
+    lines.append(_cost_impact_row("all-models", metrics=pooled_metrics))
+
+    lines.extend(
+        [
             "",
             "## Final verdict",
             "",
             f"- `{final_statement}`",
             "",
+            "## Decision drivers",
+            "",
+        ]
+    )
+    lines.extend(pooled_driver_lines)
+    if model_driver_lines:
+        lines.extend(["", "### Per-model drivers", ""])
+        for model in sorted(model_driver_lines):
+            lines.append(f"**{model}**")
+            lines.extend(model_driver_lines[model])
+            lines.append("")
+
+    lines.extend(
+        [
             "## Caveats",
             "",
             "- Verdict is cost-adjusted for current model behavior and prompting strategy.",
@@ -496,24 +910,45 @@ def build_decision_report(
 
     model_names = sorted({row.model for row in rows})
     model_mode_stats: dict[str, dict[str, ModeSummary]] = {}
+    model_accounting: dict[str, PairAccounting] = {}
     model_metrics: dict[str, DecisionMetrics] = {}
+    model_driver_lines: dict[str, list[str]] = {}
+    model_seeds: dict[str, int] = {}
     for index, model in enumerate(model_names):
         model_rows = [row for row in rows if row.model == model]
         model_mode_stats[model] = _mode_stats(model_rows)
+        model_accounting[model] = _pair_accounting(
+            model_rows, baseline=baseline, candidate=candidate
+        )
         model_pairs = _paired_rows(model_rows, baseline=baseline, candidate=candidate)
+        model_seed = seed + index
+        model_seeds[model] = model_seed
         model_metrics[model] = _decision_metrics(
             model_pairs,
             ci_level=ci_level,
             bootstrap_samples=bootstrap_samples,
-            seed=seed + index,
+            seed=model_seed,
+        )
+        model_driver_lines[model] = _decision_driver_lines(
+            label=model,
+            metrics=model_metrics[model],
+            accounting=model_accounting[model],
+            include_label_line=False,
         )
 
+    pooled_accounting = _pair_accounting(rows, baseline=baseline, candidate=candidate)
     pooled_pairs = _paired_rows(rows, baseline=baseline, candidate=candidate)
+    pooled_seed = seed + 10_000
     pooled_metrics = _decision_metrics(
         pooled_pairs,
         ci_level=ci_level,
         bootstrap_samples=bootstrap_samples,
-        seed=seed + 10_000,
+        seed=pooled_seed,
+    )
+    pooled_driver_lines = _decision_driver_lines(
+        label="all-models",
+        metrics=pooled_metrics,
+        accounting=pooled_accounting,
     )
 
     model_verdicts = {
@@ -534,41 +969,70 @@ def build_decision_report(
             "bootstrap_samples": bootstrap_samples,
             "seed": seed,
             "decision_thresholds": {
-                "success_delta_pp_min": 0.0,
-                "median_cmd_delta_max_for_net_benefit": -0.5,
-                "token_ratio_max_for_net_benefit": 1.75,
+                "success_delta_pp_min": SUCCESS_DELTA_THRESHOLD,
+                "median_cmd_delta_max_for_net_benefit": MEDIAN_CMD_DELTA_THRESHOLD,
+                "token_ratio_max_for_net_benefit": TOKEN_RATIO_THRESHOLD,
                 "ci_direction_rule": "success_ci_low >= 0 and cmd_ci_high <= -0.5",
+            },
+            "metric_provenance": {
+                "obs_suffix": "observed paired-run estimates from real data",
+                "ci_boot_suffix": "bootstrap confidence interval estimates",
+                "borderline": (
+                    "true when any bootstrap CI overlaps a decision threshold"
+                ),
             },
         },
         "inputs": [str(path) for path in input_paths],
         "models": {
             model: {
+                "evidence": _pair_accounting_to_dict(model_accounting[model]),
                 "mode_summary": {
                     mode: _mode_summary_to_dict(summary)
                     for mode, summary in sorted(model_mode_stats[model].items())
                 },
                 "decision": _decision_to_dict(model_metrics[model]),
+                "decision_drivers": model_driver_lines[model],
             }
             for model in sorted(model_metrics)
         },
         "pooled": {
+            "evidence": _pair_accounting_to_dict(pooled_accounting),
             "mode_summary": {
                 mode: _mode_summary_to_dict(summary)
                 for mode, summary in sorted(pooled_mode_stats.items())
             },
             "decision": _decision_to_dict(pooled_metrics),
+            "decision_drivers": pooled_driver_lines,
         },
         "final_statement": final_statement,
+        "cost_adjustment_summary": {
+            "models_with_changed_verdict": sorted(
+                [
+                    model
+                    for model, metrics in model_metrics.items()
+                    if _cost_adjustment_impact(metrics)[1]
+                ]
+            ),
+            "pooled_changed": _cost_adjustment_impact(pooled_metrics)[1],
+        },
     }
 
     markdown = _render_markdown(
         baseline=baseline,
         candidate=candidate,
         ci_level=ci_level,
+        bootstrap_samples=bootstrap_samples,
+        base_seed=seed,
+        model_seeds=model_seeds,
+        pooled_seed=pooled_seed,
         model_mode_stats=model_mode_stats,
+        model_accounting=model_accounting,
         pooled_mode_stats=pooled_mode_stats,
+        pooled_accounting=pooled_accounting,
         model_metrics=model_metrics,
         pooled_metrics=pooled_metrics,
+        model_driver_lines=model_driver_lines,
+        pooled_driver_lines=pooled_driver_lines,
         final_statement=final_statement,
     )
     return report_payload, markdown

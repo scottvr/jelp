@@ -163,9 +163,18 @@ class DecisionReportPipelineTests(unittest.TestCase):
             report, _ = dr.build_decision_report(input_paths=[run_path], seed=7)
 
         decision = report["models"]["test-model"]["decision"]
+        evidence = report["models"]["test-model"]["evidence"]
+        drivers = report["models"]["test-model"]["decision_drivers"]
         self.assertEqual(decision["pair_count"], 2)
         self.assertEqual(decision["success_delta_pp"], 100.0)
         self.assertEqual(decision["median_cmd_delta"], -2.0)
+        self.assertEqual(decision["success_delta_pp_obs"], 100.0)
+        self.assertEqual(decision["raw_verdict_no_cost"], dr.VERDICT_NET_BENEFIT)
+        self.assertFalse(decision["cost_adjustment_changed"])
+        self.assertEqual(evidence["observed_pairs_used"], 2)
+        self.assertEqual(evidence["expected_pairs"], 2)
+        self.assertEqual(evidence["pair_coverage"], 1.0)
+        self.assertTrue(any("Derived verdict" in line for line in drivers))
 
     def test_regression_existing_result_file_parses_tokens_and_pairs(self) -> None:
         fixture = (
@@ -187,8 +196,11 @@ class DecisionReportPipelineTests(unittest.TestCase):
 
         model_block = report["models"]["gpt-4.1-mini"]
         decision = model_block["decision"]
+        evidence = model_block["evidence"]
         mode_summary = model_block["mode_summary"]
         self.assertEqual(decision["pair_count"], 24)
+        self.assertEqual(evidence["observed_pairs_used"], 24)
+        self.assertEqual(evidence["expected_pairs"], 24)
         self.assertGreater(mode_summary["help-only-primed"]["mean_total_tokens"], 3000)
         self.assertGreater(
             mode_summary["jelp-primed-useful"]["mean_total_tokens"], 8000
@@ -281,12 +293,20 @@ class DecisionReportPipelineTests(unittest.TestCase):
             )
 
         for marker in [
+            "## Evidence accounting",
             "## Per-model decision metrics",
             "## Pooled decision metrics",
+            "## Cost adjustment impact",
             "## Final verdict",
+            "## Decision drivers",
             "## Caveats",
+            "borderline=yes",
+            "(B) help-only-primed",
+            "(C) jelp-primed-useful",
             "model-a",
             "model-b",
+            "**model-a**",
+            "**model-b**",
         ]:
             with self.subTest(marker=marker):
                 self.assertIn(marker, markdown)
@@ -344,6 +364,7 @@ class DecisionReportPipelineTests(unittest.TestCase):
 
             payload = json.loads(json_out.read_text(encoding="utf-8"))
             self.assertIn("final_statement", payload)
+            self.assertIn("cost_adjustment_summary", payload)
             markdown = md_out.read_text(encoding="utf-8")
             self.assertIn("# OpenCLI/jelp Decision Memo", markdown)
 

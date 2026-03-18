@@ -2,16 +2,17 @@
 
 # gather evidence
 PYTHONPATH=src:. .venv/bin/python ctf/harness.py \
-  --adapter openai \
-  --model gpt-4.1-mini \
-  --modes help-only help-only-primed jelp-primed-useful jelp-primed-incremental jelp-primed-full \
-  --iterations 3 \
-  --max-steps 12 \
-  --api-timeout-s 45 \
-  --response-max-output-tokens 1200 \
-  --debug \
-  --adapter-retries 2 \
-  --out ctf/results/confirmatory-gpt-4.1-mini.json
+   --adapter openai \
+   --model gpt-4.1-mini \
+   --modes help-only help-only-primed jelp-primed-useful jelp-primed-incremental jelp-primed-full \
+   --iterations 3 \
+   --max-steps 12 \
+   --api-timeout-s 45 \
+   --response-max-output-tokens 1200 \
+   --debug \
+   --resume \
+   --adapter-retries 2 \
+   --out ctf/results/confirmatory-gpt-4.1-mini.json
 
 PYTHONPATH=src:. .venv/bin/python ctf/harness.py \
   --adapter openai \
@@ -23,6 +24,7 @@ PYTHONPATH=src:. .venv/bin/python ctf/harness.py \
   --response-max-output-tokens 1200 \
   --adapter-retries 2 \
   --debug \
+  --resume \
   --out ctf/results/confirmatory-gpt-5-mini.json
 
 # Run the decision analyzer
