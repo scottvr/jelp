@@ -79,12 +79,28 @@ PYTHONPATH=src:. .venv/bin/python ctf/harness.py \
   --out ctf/results/openai-run.json
 ```
 
+Low-memory variant (recommended for long benchmark sweeps):
+
+```bash
+PYTHONPATH=src:. .venv/bin/python ctf/harness.py \
+  --adapter openai \
+  --model gpt-4.1-mini \
+  --iterations 3 \
+  --max-steps 12 \
+  --low-memory \
+  --out ctf/results/openai-run.json
+```
+
 Checkpointing behavior:
 
 - progress is checkpointed to `--out` after each completed scenario/mode result
 - if `--out` already exists, harness refuses to clobber by default
 - use `--overwrite` to start fresh over an existing file
 - use `--resume` to continue from an existing file and skip completed `(iteration, scenario, mode)` entries
+- for lower memory usage on long runs:
+  - `--summary-only` keeps only `iteration+summary` rows in `--out`
+  - `--stream-details-jsonl PATH` appends full per-result records to a JSONL sidecar
+  - `--low-memory` convenience mode enables `--summary-only` and defaults sidecar path to `<out>.details.jsonl`
 
 ### Subset run
 

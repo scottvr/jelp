@@ -100,6 +100,8 @@ class HarnessCommandValidationTests(unittest.TestCase):
                 modes=["help-only"],
                 iterations=1,
                 selected_scenarios=["fixture01_vault"],
+                summary_only=False,
+                details_jsonl=None,
             )
             harness._write_run_log_checkpoint(out, run_log)
             self.assertTrue(out.exists())
@@ -172,6 +174,90 @@ class HarnessCommandValidationTests(unittest.TestCase):
             first_payload["results"][0]["summary"]["scenario_id"],
             second_payload["results"][0]["summary"]["scenario_id"],
         )
+
+    def test_main_summary_only_writes_compact_results(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = Path(tmpdir) / "summary-only.json"
+            rc = harness.main(
+                [
+                    "--adapter",
+                    "oracle",
+                    "--scenario",
+                    "fixture01_vault",
+                    "--modes",
+                    "help-only",
+                    "--iterations",
+                    "1",
+                    "--summary-only",
+                    "--out",
+                    str(out),
+                ]
+            )
+            self.assertEqual(rc, 0)
+            payload = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(payload.get("summary_only"), True)
+            self.assertEqual(len(payload.get("results", [])), 1)
+            row = payload["results"][0]
+            self.assertEqual(set(row.keys()), {"iteration", "summary"})
+            self.assertIn("scenario_id", row["summary"])
+
+    def test_main_stream_details_jsonl_writes_full_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = Path(tmpdir) / "summary.json"
+            details = Path(tmpdir) / "details.jsonl"
+            rc = harness.main(
+                [
+                    "--adapter",
+                    "oracle",
+                    "--scenario",
+                    "fixture01_vault",
+                    "--modes",
+                    "help-only",
+                    "--iterations",
+                    "1",
+                    "--summary-only",
+                    "--stream-details-jsonl",
+                    str(details),
+                    "--out",
+                    str(out),
+                ]
+            )
+            self.assertEqual(rc, 0)
+            payload = json.loads(out.read_text(encoding="utf-8"))
+            self.assertEqual(payload.get("summary_only"), True)
+            self.assertEqual(payload.get("details_jsonl"), str(details.resolve()))
+
+            lines = details.read_text(encoding="utf-8").strip().splitlines()
+            self.assertEqual(len(lines), 1)
+            row = json.loads(lines[0])
+            self.assertIn("turns", row)
+            self.assertIn("debug_events", row)
+            self.assertIn("model_usage", row)
+            self.assertIn("anomalies", row)
+
+    def test_main_refuses_existing_details_jsonl_without_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = Path(tmpdir) / "new-run.json"
+            details = Path(tmpdir) / "details.jsonl"
+            details.write_text("existing\n", encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                harness.main(
+                    [
+                        "--adapter",
+                        "oracle",
+                        "--scenario",
+                        "fixture01_vault",
+                        "--modes",
+                        "help-only",
+                        "--iterations",
+                        "1",
+                        "--summary-only",
+                        "--stream-details-jsonl",
+                        str(details),
+                        "--out",
+                        str(out),
+                    ]
+                )
 
     def test_detect_command_anomalies_flags_shell_markers(self) -> None:
         reasons = harness._detect_command_anomalies(

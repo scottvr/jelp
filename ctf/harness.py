@@ -84,6 +84,10 @@ def _mode_debug_code(mode: str) -> str:
     return MODE_DEBUG_CODES.get(mode, "m")
 
 
+def _default_details_jsonl_path(out_path: Path) -> Path:
+    return out_path.with_name(f"{out_path.stem}.details.jsonl")
+
+
 def _summary_to_run_result(summary: dict[str, object]) -> RunResult:
     return RunResult(
         scenario_id=str(summary.get("scenario_id", "")),
@@ -180,6 +184,8 @@ def _new_run_log(
     modes: list[str],
     iterations: int,
     selected_scenarios: list[str],
+    summary_only: bool,
+    details_jsonl: str | None,
 ) -> dict[str, object]:
     return {
         "schema_version": CHECKPOINT_SCHEMA_VERSION,
@@ -189,6 +195,8 @@ def _new_run_log(
         "modes": modes,
         "iterations": iterations,
         "selected_scenarios": selected_scenarios,
+        "summary_only": summary_only,
+        "details_jsonl": details_jsonl,
         "results": [],
     }
 
@@ -199,6 +207,13 @@ def _write_run_log_checkpoint(path: Path, run_log: dict[str, object]) -> None:
     temp = path.with_name(path.name + ".tmp")
     temp.write_text(json.dumps(run_log, indent=2), encoding="utf-8")
     temp.replace(path)
+
+
+def _append_jsonl_record(path: Path, payload: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, separators=(",", ":")))
+        handle.write("\n")
 
 
 def _command_rejection_reason(*, tokens: list[str], expected_script: str) -> str | None:
@@ -765,6 +780,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--allow-duplicates", action="store_true")
     parser.add_argument(
+        "--summary-only",
+        action="store_true",
+        help="store only iteration/summary rows in --out results",
+    )
+    parser.add_argument(
+        "--stream-details-jsonl",
+        default=None,
+        help="append full per-result records (turns/debug/usage) to this JSONL path",
+    )
+    parser.add_argument(
+        "--low-memory",
+        action="store_true",
+        help=(
+            "enable low-memory logging: implies --summary-only and defaults "
+            "--stream-details-jsonl to <out>.details.jsonl"
+        ),
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help="resume from an existing --out log and skip completed runs",
@@ -786,6 +819,16 @@ def main(argv: list[str] | None = None) -> int:
     selected = [s for s in SCENARIOS if not args.scenario or s.id in set(args.scenario)]
     selected_ids = [scenario.id for scenario in selected]
     out_path = Path(args.out)
+    requested_summary_only = bool(args.summary_only or args.low_memory)
+    requested_details_jsonl_path: Path | None = (
+        Path(args.stream_details_jsonl)
+        if args.stream_details_jsonl is not None
+        else None
+    )
+    if args.low_memory and requested_details_jsonl_path is None:
+        requested_details_jsonl_path = _default_details_jsonl_path(out_path)
+    if requested_details_jsonl_path is not None:
+        requested_details_jsonl_path = requested_details_jsonl_path.resolve()
 
     existing = out_path.exists()
     if existing and not args.resume and not args.overwrite:
@@ -796,6 +839,8 @@ def main(argv: list[str] | None = None) -> int:
     run_log: dict[str, object]
     all_results: list[RunResult]
     completed_keys: set[tuple[int, str, str]]
+    details_jsonl_path: Path | None = requested_details_jsonl_path
+    effective_summary_only = requested_summary_only
 
     if args.resume and existing:
         try:
@@ -826,6 +871,41 @@ def main(argv: list[str] | None = None) -> int:
             summary = row.get("summary", {})
             if isinstance(summary, dict):
                 all_results.append(_summary_to_run_result(summary))
+
+        existing_summary_only = bool(run_log.get("summary_only", False))
+        if args.summary_only or args.low_memory:
+            effective_summary_only = True
+        else:
+            effective_summary_only = existing_summary_only
+        run_log["summary_only"] = effective_summary_only
+
+        existing_details_raw = run_log.get("details_jsonl")
+        existing_details_path: Path | None = None
+        if isinstance(existing_details_raw, str) and existing_details_raw:
+            existing_details_path = Path(existing_details_raw).resolve()
+        if (
+            existing_details_path is not None
+            and requested_details_jsonl_path is not None
+            and existing_details_path != requested_details_jsonl_path
+        ):
+            parser.error(
+                "--stream-details-jsonl does not match existing resume log "
+                f"(existing={existing_details_path}, requested={requested_details_jsonl_path})"
+            )
+        if existing_details_path is not None:
+            details_jsonl_path = existing_details_path
+            run_log["details_jsonl"] = str(details_jsonl_path)
+        elif requested_details_jsonl_path is not None:
+            if requested_details_jsonl_path.exists():
+                parser.error(
+                    "--stream-details-jsonl path already exists but is not linked to "
+                    f"the resume log: {requested_details_jsonl_path}"
+                )
+            details_jsonl_path = requested_details_jsonl_path
+            run_log["details_jsonl"] = str(details_jsonl_path)
+        else:
+            details_jsonl_path = None
+
         if args.debug:
             print(
                 f"[debug] resuming from {out_path} with {len(completed_keys)} completed entries",
@@ -843,9 +923,25 @@ def main(argv: list[str] | None = None) -> int:
             modes=args.modes,
             iterations=args.iterations,
             selected_scenarios=selected_ids,
+            summary_only=effective_summary_only,
+            details_jsonl=(
+                None if details_jsonl_path is None else str(details_jsonl_path)
+            ),
         )
         completed_keys = set()
         all_results = []
+
+        if details_jsonl_path is not None and details_jsonl_path.exists():
+            if not args.overwrite:
+                parser.error(
+                    "--stream-details-jsonl path already exists: "
+                    f"{details_jsonl_path} (use --overwrite)"
+                )
+            details_jsonl_path.unlink()
+        if details_jsonl_path is not None:
+            details_jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+            details_jsonl_path.write_text("", encoding="utf-8")
+
         _write_run_log_checkpoint(out_path, run_log)
 
     interrupted = False
@@ -893,16 +989,25 @@ def main(argv: list[str] | None = None) -> int:
                         )
                     )
                     all_results.append(result)
-                    run_log["results"].append(
-                        {
-                            "iteration": iteration,
-                            "summary": asdict(result),
-                            "turns": [asdict(turn) for turn in turns],
-                            "debug_events": debug_events,
-                            "model_usage": model_usage_events,
-                            "anomalies": anomaly_events,
-                        }
-                    )
+                    detailed_row = {
+                        "iteration": iteration,
+                        "summary": asdict(result),
+                        "turns": [asdict(turn) for turn in turns],
+                        "debug_events": debug_events,
+                        "model_usage": model_usage_events,
+                        "anomalies": anomaly_events,
+                    }
+                    if effective_summary_only:
+                        run_log["results"].append(
+                            {
+                                "iteration": iteration,
+                                "summary": asdict(result),
+                            }
+                        )
+                    else:
+                        run_log["results"].append(detailed_row)
+                    if details_jsonl_path is not None:
+                        _append_jsonl_record(details_jsonl_path, detailed_row)
                     completed_keys.add(key)
                     _write_run_log_checkpoint(out_path, run_log)
     except KeyboardInterrupt:
