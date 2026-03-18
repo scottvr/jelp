@@ -14,7 +14,7 @@ Also included in this repo is an evaluation harness designed to perform a cost-b
 | gpt-5-mini   | Net benefit now                       | Net benefit now                       | no              |           1.150 |                  1.75 | -      |
 | all-models   | Promising, strategy adjustment needed | Promising, strategy adjustment needed | no              |           1.608 |                  1.75 | -      |
 
-This comes from the [generated CTF harness run report](ctf/results/confirmatory-decision.md),
+This table comes from the [generated CTF harness run report](ctf/results/confirmatory-decision.md).
 
 ----
 
