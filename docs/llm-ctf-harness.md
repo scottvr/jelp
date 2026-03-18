@@ -155,7 +155,7 @@ If your chosen model supports temperature, you can pass it:
 
 If omitted, no temperature is sent (avoids model-compatibility issues).
 
-For GPT-5 family models that sometimes return empty or partial text, try:
+For GPT-5 family models that sometimes return empty or partial text (some sort of reasoning notice I haven't read into yet), try:
 
 ```bash
 --model gpt-5-mini --adapter-retries 2 --response-max-output-tokens 700
