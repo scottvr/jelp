@@ -30,6 +30,7 @@ MODE_DEBUG_CODES: dict[str, str] = {
     "jelp-primed-incremental": "jpi",
     "jelp-primed-full": "jpf",
 }
+CHECKPOINT_SCHEMA_VERSION = 1
 
 
 def _usage_int(value: object) -> int:
@@ -81,6 +82,123 @@ def _scenario_debug_code(scenario_id: str) -> str:
 
 def _mode_debug_code(mode: str) -> str:
     return MODE_DEBUG_CODES.get(mode, "m")
+
+
+def _summary_to_run_result(summary: dict[str, object]) -> RunResult:
+    return RunResult(
+        scenario_id=str(summary.get("scenario_id", "")),
+        mode=str(summary.get("mode", "")),
+        adapter=str(summary.get("adapter", "")),
+        success=bool(summary.get("success", False)),
+        matched_flag=(
+            None
+            if summary.get("matched_flag") is None
+            else str(summary["matched_flag"])
+        ),
+        expected_flag=str(summary.get("expected_flag", "")),
+        command_count=_usage_int(summary.get("command_count")),
+        invalid_command_count=_usage_int(summary.get("invalid_command_count")),
+        parser_error_count=_usage_int(summary.get("parser_error_count")),
+        anomaly_count=_usage_int(summary.get("anomaly_count")),
+        duration_s=float(summary.get("duration_s", 0.0)),
+        time_to_success_s=(
+            None
+            if summary.get("time_to_success_s") is None
+            else float(summary["time_to_success_s"])
+        ),
+        api_call_count=_usage_int(summary.get("api_call_count")),
+        model_input_tokens=_usage_int(summary.get("model_input_tokens")),
+        model_output_tokens=_usage_int(summary.get("model_output_tokens")),
+        model_total_tokens=_usage_int(summary.get("model_total_tokens")),
+    )
+
+
+def _result_key(iteration: int, scenario_id: str, mode: str) -> tuple[int, str, str]:
+    return (iteration, scenario_id, mode)
+
+
+def _extract_completed_keys(run_log: dict[str, object]) -> set[tuple[int, str, str]]:
+    keys: set[tuple[int, str, str]] = set()
+    rows = run_log.get("results", [])
+    if not isinstance(rows, list):
+        return keys
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        summary = row.get("summary", {})
+        if not isinstance(summary, dict):
+            continue
+        keys.add(
+            _result_key(
+                _usage_int(row.get("iteration")) or 1,
+                str(summary.get("scenario_id", "")),
+                str(summary.get("mode", "")),
+            )
+        )
+    return keys
+
+
+def _resume_mismatch_reason(
+    *,
+    existing: dict[str, object],
+    adapter: str,
+    model: str,
+    modes: list[str],
+    iterations: int,
+) -> str | None:
+    existing_adapter = existing.get("adapter")
+    if existing_adapter is not None and str(existing_adapter) != adapter:
+        return f"adapter mismatch (existing={existing_adapter}, requested={adapter})"
+
+    existing_model = existing.get("model")
+    if existing_model is not None and str(existing_model) != model:
+        return f"model mismatch (existing={existing_model}, requested={model})"
+
+    existing_modes = existing.get("modes")
+    if isinstance(existing_modes, list):
+        existing_modes_norm = [str(mode_name) for mode_name in existing_modes]
+        if existing_modes_norm != modes:
+            return f"modes mismatch (existing={existing_modes_norm}, requested={modes})"
+
+    existing_iterations = existing.get("iterations")
+    if (
+        existing_iterations is not None
+        and _usage_int(existing_iterations) != iterations
+    ):
+        return (
+            "iterations mismatch "
+            f"(existing={existing_iterations}, requested={iterations})"
+        )
+
+    return None
+
+
+def _new_run_log(
+    *,
+    adapter: str,
+    model: str,
+    modes: list[str],
+    iterations: int,
+    selected_scenarios: list[str],
+) -> dict[str, object]:
+    return {
+        "schema_version": CHECKPOINT_SCHEMA_VERSION,
+        "timestamp": datetime.now(UTC).isoformat(),
+        "adapter": adapter,
+        "model": model,
+        "modes": modes,
+        "iterations": iterations,
+        "selected_scenarios": selected_scenarios,
+        "results": [],
+    }
+
+
+def _write_run_log_checkpoint(path: Path, run_log: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    run_log["last_checkpoint_utc"] = datetime.now(UTC).isoformat()
+    temp = path.with_name(path.name + ".tmp")
+    temp.write_text(json.dumps(run_log, indent=2), encoding="utf-8")
+    temp.replace(path)
 
 
 def _command_rejection_reason(*, tokens: list[str], expected_script: str) -> str | None:
@@ -646,71 +764,158 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--adapter-retries", type=int, default=1)
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--allow-duplicates", action="store_true")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="resume from an existing --out log and skip completed runs",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="overwrite existing --out log (default is to refuse clobber)",
+    )
     parser.add_argument("--scenario", action="append", default=[])
     parser.add_argument("--out", default="ctf/results/latest.json")
     args = parser.parse_args(argv)
     if args.iterations < 1:
         parser.error("--iterations must be >= 1")
+    if args.resume and args.overwrite:
+        parser.error("--resume and --overwrite are mutually exclusive")
 
     repo_root = Path(__file__).resolve().parents[1]
     selected = [s for s in SCENARIOS if not args.scenario or s.id in set(args.scenario)]
+    selected_ids = [scenario.id for scenario in selected]
+    out_path = Path(args.out)
 
-    all_results: list[RunResult] = []
-    run_log: dict[str, object] = {
-        "timestamp": datetime.now(UTC).isoformat(),
-        "adapter": args.adapter,
-        "model": args.model,
-        "modes": args.modes,
-        "iterations": args.iterations,
-        "results": [],
-    }
+    existing = out_path.exists()
+    if existing and not args.resume and not args.overwrite:
+        parser.error(
+            f"--out path already exists: {out_path} (use --resume or --overwrite)"
+        )
 
-    for iteration in range(1, args.iterations + 1):
+    run_log: dict[str, object]
+    all_results: list[RunResult]
+    completed_keys: set[tuple[int, str, str]]
+
+    if args.resume and existing:
+        try:
+            run_log = json.loads(out_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            parser.error(f"failed to parse existing resume log {out_path}: {exc}")
+        mismatch = _resume_mismatch_reason(
+            existing=run_log,
+            adapter=args.adapter,
+            model=args.model,
+            modes=args.modes,
+            iterations=args.iterations,
+        )
+        if mismatch is not None:
+            parser.error(f"--resume is incompatible with existing log: {mismatch}")
+        if "selected_scenarios" in run_log:
+            existing_selected = [str(value) for value in run_log["selected_scenarios"]]
+            if existing_selected != selected_ids:
+                parser.error(
+                    "--resume selected scenarios mismatch "
+                    f"(existing={existing_selected}, requested={selected_ids})"
+                )
+        completed_keys = _extract_completed_keys(run_log)
+        all_results = []
+        for row in run_log.get("results", []):
+            if not isinstance(row, dict):
+                continue
+            summary = row.get("summary", {})
+            if isinstance(summary, dict):
+                all_results.append(_summary_to_run_result(summary))
         if args.debug:
             print(
-                f"[debug] starting iteration {iteration}/{args.iterations}",
+                f"[debug] resuming from {out_path} with {len(completed_keys)} completed entries",
                 flush=True,
             )
-        for scenario in selected:
-            for mode in args.modes:
-                result, turns, debug_events, model_usage_events, anomaly_events = (
-                    _run_single(
-                        scenario=scenario,
-                        mode=mode,
-                        adapter_name=args.adapter,
-                        model=args.model,
-                        max_steps=args.max_steps,
-                        timeout_s=args.timeout_s,
-                        repo_root=repo_root,
-                        debug=args.debug,
-                        api_timeout_s=args.api_timeout_s,
-                        temperature=args.temperature,
-                        response_max_output_tokens=args.response_max_output_tokens,
-                        adapter_retries=args.adapter_retries,
-                        reject_duplicates=not args.allow_duplicates,
-                        iteration_index=iteration,
-                        iteration_total=args.iterations,
+    else:
+        if args.resume and not existing:
+            print(
+                f"[debug] --resume requested but {out_path} does not exist; starting new run",
+                flush=True,
+            )
+        run_log = _new_run_log(
+            adapter=args.adapter,
+            model=args.model,
+            modes=args.modes,
+            iterations=args.iterations,
+            selected_scenarios=selected_ids,
+        )
+        completed_keys = set()
+        all_results = []
+        _write_run_log_checkpoint(out_path, run_log)
+
+    interrupted = False
+    try:
+        for iteration in range(1, args.iterations + 1):
+            if args.debug:
+                print(
+                    f"[debug] starting iteration {iteration}/{args.iterations}",
+                    flush=True,
+                )
+            for scenario in selected:
+                for mode in args.modes:
+                    key = _result_key(iteration, scenario.id, mode)
+                    if key in completed_keys:
+                        if args.debug:
+                            skip_scope = (
+                                f"i{iteration:02d}."
+                                f"{_scenario_debug_code(scenario.id)}."
+                                f"{_mode_debug_code(mode)}."
+                                "skip"
+                            )
+                            print(
+                                f"[debug][{skip_scope}] skipping completed result from resume checkpoint",
+                                flush=True,
+                            )
+                        continue
+
+                    result, turns, debug_events, model_usage_events, anomaly_events = (
+                        _run_single(
+                            scenario=scenario,
+                            mode=mode,
+                            adapter_name=args.adapter,
+                            model=args.model,
+                            max_steps=args.max_steps,
+                            timeout_s=args.timeout_s,
+                            repo_root=repo_root,
+                            debug=args.debug,
+                            api_timeout_s=args.api_timeout_s,
+                            temperature=args.temperature,
+                            response_max_output_tokens=args.response_max_output_tokens,
+                            adapter_retries=args.adapter_retries,
+                            reject_duplicates=not args.allow_duplicates,
+                            iteration_index=iteration,
+                            iteration_total=args.iterations,
+                        )
                     )
-                )
-                all_results.append(result)
-                run_log["results"].append(
-                    {
-                        "iteration": iteration,
-                        "summary": asdict(result),
-                        "turns": [asdict(turn) for turn in turns],
-                        "debug_events": debug_events,
-                        "model_usage": model_usage_events,
-                        "anomalies": anomaly_events,
-                    }
-                )
+                    all_results.append(result)
+                    run_log["results"].append(
+                        {
+                            "iteration": iteration,
+                            "summary": asdict(result),
+                            "turns": [asdict(turn) for turn in turns],
+                            "debug_events": debug_events,
+                            "model_usage": model_usage_events,
+                            "anomalies": anomaly_events,
+                        }
+                    )
+                    completed_keys.add(key)
+                    _write_run_log_checkpoint(out_path, run_log)
+    except KeyboardInterrupt:
+        interrupted = True
+        print("\nInterrupted by user; checkpoint preserved.", flush=True)
 
     _print_summary(all_results)
 
-    out_path = Path(args.out)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(run_log, indent=2), encoding="utf-8")
+    _write_run_log_checkpoint(out_path, run_log)
     print(f"\nWrote detailed run log: {out_path}")
 
+    if interrupted:
+        return 130
     return 0
 
 

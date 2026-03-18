@@ -79,6 +79,13 @@ PYTHONPATH=src:. .venv/bin/python ctf/harness.py \
   --out ctf/results/openai-run.json
 ```
 
+Checkpointing behavior:
+
+- progress is checkpointed to `--out` after each completed scenario/mode result
+- if `--out` already exists, harness refuses to clobber by default
+- use `--overwrite` to start fresh over an existing file
+- use `--resume` to continue from an existing file and skip completed `(iteration, scenario, mode)` entries
+
 ### Subset run
 
 ```bash
