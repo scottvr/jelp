@@ -106,6 +106,13 @@ PYTHONPATH=src:. .venv/bin/python ctf/harness.py \
 Shows step-by-step harness activity and raw model text responses.
 When `--debug` is enabled, these debug lines are also persisted in the output JSON under each result as `debug_events`.
 
+Debug output includes:
+
+- `iteration=x/y ... step=n` so long runs are trackable in real time.
+- a short per-turn scope id in brackets (for example `i01.f04.ho.s03`) for grep/correlation.
+- explicit console-preview truncation notices for large stdout/stderr/model text.
+- explicit API-side incompletion notices when a model response reports truncation/incomplete details (for example, max output token constraints).
+
 ```bash
 PYTHONPATH=src:. .venv/bin/python ctf/harness.py \
   --adapter openai \

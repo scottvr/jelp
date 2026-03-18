@@ -18,6 +18,18 @@ from ctf.scenarios import SCENARIOS, Scenario, fixture_dir
 
 FLAG_RE = re.compile(r"FLAG\{[^}]+\}")
 SHELL_CONTROL_TOKENS = {";", "|", "||", "&&", ">", "<", ">>", "<<", "&"}
+DEBUG_IO_PREVIEW_CHARS = 1500
+MODE_DEBUG_CODES: dict[str, str] = {
+    "help-only": "ho",
+    "help-only-primed": "hp",
+    "jelp-useful": "ju",
+    "jelp-primed": "jp",
+    "jelp-no-meta": "jn",
+    "jelp-all": "ja",
+    "jelp-primed-useful": "jpu",
+    "jelp-primed-incremental": "jpi",
+    "jelp-primed-full": "jpf",
+}
 
 
 def _usage_int(value: object) -> int:
@@ -51,6 +63,24 @@ def _detect_command_anomalies(*, command: str, tokens: list[str] | None) -> list
                 + ", ".join(f"'{token}'" for token in matched)
             )
     return reasons
+
+
+def _console_preview(text: str, *, limit: int) -> tuple[str, bool]:
+    if len(text) <= limit:
+        return text, False
+    return text[:limit], True
+
+
+def _scenario_debug_code(scenario_id: str) -> str:
+    match = re.search(r"fixture(\d+)", scenario_id)
+    if match:
+        return f"f{int(match.group(1)):02d}"
+    safe = re.sub(r"[^a-zA-Z0-9]+", "", scenario_id)
+    return (safe[:4] or "sc").lower()
+
+
+def _mode_debug_code(mode: str) -> str:
+    return MODE_DEBUG_CODES.get(mode, "m")
 
 
 def _command_rejection_reason(*, tokens: list[str], expected_script: str) -> str | None:
@@ -239,6 +269,8 @@ def _run_single(
     response_max_output_tokens: int,
     adapter_retries: int,
     reject_duplicates: bool,
+    iteration_index: int,
+    iteration_total: int,
 ) -> tuple[
     RunResult,
     list[TurnRecord],
@@ -291,7 +323,16 @@ def _run_single(
     env["JELP_MODE"] = mode
 
     def _emit_anomaly(*, step: int, command: str, reason: str) -> None:
+        scope = (
+            f"i{iteration_index:02d}."
+            f"{_scenario_debug_code(scenario.id)}."
+            f"{_mode_debug_code(mode)}."
+            f"s{step:02d}"
+        )
         event = {
+            "scope": scope,
+            "iteration": iteration_index,
+            "iteration_total": iteration_total,
             "step": step,
             "scenario_id": scenario.id,
             "mode": mode,
@@ -300,7 +341,8 @@ def _run_single(
         }
         anomaly_events.append(event)
         message = (
-            f"[anomaly] scenario={scenario.id} mode={mode} step={step} "
+            f"[anomaly][{scope}] iteration={iteration_index}/{iteration_total} "
+            f"scenario={scenario.id} mode={mode} step={step} "
             f"reason={reason} command={command}"
         )
         print(message, flush=True)
@@ -309,20 +351,30 @@ def _run_single(
 
     while counted_steps < max_steps:
         step = counted_steps + 1
-        _emit_debug(f"[debug] scenario={scenario.id} mode={mode} step={step}")
+        scope = (
+            f"i{iteration_index:02d}."
+            f"{_scenario_debug_code(scenario.id)}."
+            f"{_mode_debug_code(mode)}."
+            f"s{step:02d}"
+        )
+        _emit_debug(
+            f"[debug][{scope}] iteration={iteration_index}/{iteration_total} "
+            f"scenario={scenario.id} mode={mode} step={step}"
+        )
         command = adapter.next_command(
             scenario=scenario,
             mode=mode,
             turns=turns,
             allowed_prefix=allowed_prefix,
+            debug_scope=scope,
         ).strip()
 
         if not command:
             _emit_debug(
-                "[debug] adapter returned empty command; stopping scenario loop"
+                f"[debug][{scope}] adapter returned empty command; stopping scenario loop"
             )
             break
-        _emit_debug(f"[debug] command: {command}")
+        _emit_debug(f"[debug][{scope}] command: {command}")
 
         if reject_duplicates and command in seen_commands:
             invalid += 1
@@ -334,7 +386,7 @@ def _run_single(
                     stderr="Rejected: duplicate command (already attempted).",
                 )
             )
-            _emit_debug("[debug] rejected command: duplicate")
+            _emit_debug(f"[debug][{scope}] rejected command: duplicate")
             counted_steps += 1
             continue
         seen_commands.add(command)
@@ -353,7 +405,7 @@ def _run_single(
                     stderr=f"Rejected: malformed command syntax ({split_error})",
                 )
             )
-            _emit_debug("[debug] rejected command: malformed syntax")
+            _emit_debug(f"[debug][{scope}] rejected command: malformed syntax")
             counted_steps += 1
             continue
 
@@ -371,7 +423,7 @@ def _run_single(
                     stderr=f"Rejected: {target_rejection}",
                 )
             )
-            _emit_debug(f"[debug] rejected command: {target_rejection}")
+            _emit_debug(f"[debug][{scope}] rejected command: {target_rejection}")
             counted_steps += 1
             continue
 
@@ -386,7 +438,7 @@ def _run_single(
                     stderr=f"Rejected: {violation}",
                 )
             )
-            _emit_debug(f"[debug] policy violation: {violation}")
+            _emit_debug(f"[debug][{scope}] policy violation: {violation}")
             if _is_non_penalized_jelp_probe_tokens(
                 mode=mode,
                 tokens=tokens,
@@ -394,11 +446,11 @@ def _run_single(
             ):
                 free_probe_rejections += 1
                 _emit_debug(
-                    "[debug] non-penalized jelp probe rejected; step budget unchanged"
+                    f"[debug][{scope}] non-penalized jelp probe rejected; step budget unchanged"
                 )
                 if free_probe_rejections >= max_steps:
                     _emit_debug(
-                        "[debug] too many non-penalized probe rejections; stopping scenario loop"
+                        f"[debug][{scope}] too many non-penalized probe rejections; stopping scenario loop"
                     )
                     break
                 continue
@@ -414,11 +466,35 @@ def _run_single(
         )
         turns.append(turn)
         counted_steps += 1
-        _emit_debug(f"[debug] exit={turn.returncode}")
+        _emit_debug(f"[debug][{scope}] exit={turn.returncode}")
         if turn.stdout:
-            _emit_debug(f"[debug] stdout:\n{turn.stdout[:1500]}")
+            preview, truncated = _console_preview(
+                turn.stdout,
+                limit=DEBUG_IO_PREVIEW_CHARS,
+            )
+            if truncated:
+                _emit_debug(
+                    f"[debug][{scope}] stdout "
+                    f"(console preview {DEBUG_IO_PREVIEW_CHARS} chars; "
+                    "full command output retained in run log):\n"
+                    f"{preview}"
+                )
+            else:
+                _emit_debug(f"[debug][{scope}] stdout:\n{preview}")
         if turn.stderr:
-            _emit_debug(f"[debug] stderr:\n{turn.stderr[:1500]}")
+            preview, truncated = _console_preview(
+                turn.stderr,
+                limit=DEBUG_IO_PREVIEW_CHARS,
+            )
+            if truncated:
+                _emit_debug(
+                    f"[debug][{scope}] stderr "
+                    f"(console preview {DEBUG_IO_PREVIEW_CHARS} chars; "
+                    "full command output retained in run log):\n"
+                    f"{preview}"
+                )
+            else:
+                _emit_debug(f"[debug][{scope}] stderr:\n{preview}")
 
         if "error:" in (turn.stdout + turn.stderr):
             parser_errors += 1
@@ -612,6 +688,8 @@ def main(argv: list[str] | None = None) -> int:
                         response_max_output_tokens=args.response_max_output_tokens,
                         adapter_retries=args.adapter_retries,
                         reject_duplicates=not args.allow_duplicates,
+                        iteration_index=iteration,
+                        iteration_total=args.iterations,
                     )
                 )
                 all_results.append(result)

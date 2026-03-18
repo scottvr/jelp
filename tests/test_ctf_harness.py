@@ -11,6 +11,11 @@ from ctf import harness
 
 
 class HarnessCommandValidationTests(unittest.TestCase):
+    def test_debug_scope_helpers(self) -> None:
+        self.assertEqual(harness._scenario_debug_code("fixture04_bundle"), "f04")
+        self.assertEqual(harness._mode_debug_code("help-only"), "ho")
+        self.assertEqual(harness._mode_debug_code("unknown-mode"), "m")
+
     def test_detect_command_anomalies_flags_shell_markers(self) -> None:
         reasons = harness._detect_command_anomalies(
             command="python fixture01_vault.py ; ls $(pwd) `whoami`",

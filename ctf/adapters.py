@@ -11,6 +11,7 @@ from ctf.scenarios import Scenario
 
 _DEFAULT_HISTORY_CHARS = 1400
 _JELP_HISTORY_CHARS = 20000
+_DEBUG_MODEL_TEXT_PREVIEW_CHARS = 2000
 
 
 @dataclass(frozen=True)
@@ -29,6 +30,7 @@ class CommandAdapter(Protocol):
         mode: str,
         turns: list[TurnRecord],
         allowed_prefix: str,
+        debug_scope: str = "",
     ) -> str: ...
 
 
@@ -40,8 +42,9 @@ class OracleAdapter:
         mode: str,
         turns: list[TurnRecord],
         allowed_prefix: str,
+        debug_scope: str = "",
     ) -> str:
-        del mode, allowed_prefix
+        del mode, allowed_prefix, debug_scope
         if turns:
             return ""
         return scenario.oracle_command
@@ -83,14 +86,25 @@ class OpenAIAdapter:
         mode: str,
         turns: list[TurnRecord],
         allowed_prefix: str,
+        debug_scope: str = "",
     ) -> str:
+        scope_prefix = f"[{debug_scope}]" if debug_scope else ""
         history_lines: list[str] = []
+        history_truncations: list[str] = []
         for idx, turn in enumerate(turns, start=1):
             history_chars = (
                 _JELP_HISTORY_CHARS
                 if "--jelp" in turn.command
                 else _DEFAULT_HISTORY_CHARS
             )
+            if len(turn.stdout) > history_chars:
+                history_truncations.append(
+                    f"step {idx} stdout {len(turn.stdout)}->{history_chars}"
+                )
+            if len(turn.stderr) > history_chars:
+                history_truncations.append(
+                    f"step {idx} stderr {len(turn.stderr)}->{history_chars}"
+                )
             history_lines.append(
                 f"Step {idx}\\n"
                 f"command: {turn.command}\\n"
@@ -150,7 +164,22 @@ class OpenAIAdapter:
         )
 
         prompt = content
-        for attempt in range(self._retries + 1):
+        if history_truncations:
+            listed = "; ".join(history_truncations[:6])
+            more = (
+                f" (+{len(history_truncations) - 6} more)"
+                if len(history_truncations) > 6
+                else ""
+            )
+            self._emit_debug(
+                "[debug]"
+                + scope_prefix
+                + "[openai] model-input history truncation applied before request: "
+                f"{listed}{more}"
+            )
+        total_attempts = self._retries + 1
+        for attempt_index in range(total_attempts):
+            attempt = attempt_index + 1
             request_kwargs = {
                 "model": self._model,
                 "input": prompt,
@@ -177,18 +206,22 @@ class OpenAIAdapter:
                 request_kwargs["temperature"] = self._temperature
 
             self._emit_debug(
-                f"[debug][openai] requesting model={self._model} timeout={self._api_timeout_s}s attempt={attempt + 1}"
+                "[debug]"
+                + scope_prefix
+                + "[openai] "
+                + f"requesting model={self._model} timeout={self._api_timeout_s}s attempt={attempt}/{total_attempts}"
             )
             t0 = time.perf_counter()
             try:
                 response = self._client.responses.create(**request_kwargs)
             except Exception as exc:  # pragma: no cover - network runtime behavior
-                self._emit_debug(f"[debug][openai] request failed: {exc}")
+                self._emit_debug(f"[debug]{scope_prefix}[openai] request failed: {exc}")
                 return ""
             elapsed = time.perf_counter() - t0
             self._emit_usage(
                 {
-                    "attempt": attempt + 1,
+                    "attempt": attempt,
+                    "attempt_total": total_attempts,
                     "elapsed_s": round(elapsed, 3),
                     "model": self._model,
                     **_extract_response_usage(response),
@@ -197,16 +230,48 @@ class OpenAIAdapter:
             text = (response.output_text or "").strip()
             if not text:
                 text = _extract_text_from_response_output(response)
-            self._emit_debug(f"[debug][openai] response in {elapsed:.2f}s")
+            truncation_reason = _response_incomplete_reason(response)
+            if truncation_reason is not None:
+                self._emit_debug(
+                    "[debug]"
+                    + scope_prefix
+                    + "[openai] model output may be constraint-truncated "
+                    f"(api side): {truncation_reason}"
+                )
+            self._emit_debug(
+                f"[debug]{scope_prefix}[openai] response in {elapsed:.2f}s"
+            )
             if text:
-                self._emit_debug(f"[debug][openai] raw response:\n{text}")
+                preview, truncated = _console_preview(
+                    text,
+                    limit=_DEBUG_MODEL_TEXT_PREVIEW_CHARS,
+                )
+                if truncated:
+                    self._emit_debug(
+                        "[debug]" + scope_prefix + "[openai] raw response "
+                        f"(console preview {_DEBUG_MODEL_TEXT_PREVIEW_CHARS} chars; "
+                        "command parsing used the full response text):\n"
+                        f"{preview}"
+                    )
+                else:
+                    self._emit_debug(
+                        f"[debug]{scope_prefix}[openai] raw response:\n{preview}"
+                    )
             else:
-                self._emit_debug("[debug][openai] empty response text")
+                output_class = _classify_response_output_items(response)
+                self._emit_debug(
+                    "[debug]"
+                    + scope_prefix
+                    + "[openai] no command-bearing response text "
+                    f"({output_class})"
+                )
                 output = getattr(response, "output", None)
                 if output is not None:
-                    self._emit_debug(f"[debug][openai] raw output items: {output}")
+                    self._emit_debug(
+                        f"[debug]{scope_prefix}[openai] raw output items: {output}"
+                    )
             command = _extract_command_from_model_text(text)
-            self._emit_debug(f"[debug][openai] parsed command: {command}")
+            self._emit_debug(f"[debug]{scope_prefix}[openai] parsed command: {command}")
             if command:
                 return command
             prompt = (
@@ -315,11 +380,20 @@ def _extract_text_from_response_output(response: object) -> str:
     for item in output:
         content = getattr(item, "content", None)
         if not isinstance(content, list):
+            arguments = getattr(item, "arguments", None)
+            if isinstance(arguments, str) and arguments.strip():
+                chunks.append(arguments.strip())
             continue
         for part in content:
             text = getattr(part, "text", None)
             if isinstance(text, str) and text.strip():
                 chunks.append(text.strip())
+            parsed = getattr(part, "parsed", None)
+            if parsed is not None:
+                if isinstance(parsed, (dict, list)):
+                    chunks.append(json.dumps(parsed, separators=(",", ":")))
+                else:
+                    chunks.append(str(parsed))
 
     return "\n".join(chunks).strip()
 
@@ -339,6 +413,52 @@ def _extract_response_usage(response: object) -> dict[str, int]:
         "output_tokens": output_tokens,
         "total_tokens": total_tokens,
     }
+
+
+def _response_incomplete_reason(response: object) -> str | None:
+    details = getattr(response, "incomplete_details", None)
+    if details is not None:
+        if isinstance(details, dict):
+            reason = details.get("reason")
+            if reason is not None:
+                return str(reason)
+            return str(details)
+        reason = getattr(details, "reason", None)
+        if reason is not None:
+            return str(reason)
+        return str(details)
+
+    status = getattr(response, "status", None)
+    if isinstance(status, str) and status.lower() == "incomplete":
+        return "response status is incomplete"
+    return None
+
+
+def _classify_response_output_items(response: object) -> str:
+    output = getattr(response, "output", None)
+    if not isinstance(output, list):
+        return "output list unavailable"
+    if not output:
+        return "output list empty"
+
+    item_types: list[str] = []
+    for item in output:
+        item_type = getattr(item, "type", None)
+        if isinstance(item_type, str):
+            item_types.append(item_type)
+        else:
+            item_types.append(type(item).__name__)
+
+    unique = sorted(set(item_types))
+    if unique == ["reasoning"]:
+        return "reasoning-only output items"
+    return "output item types: " + ",".join(unique)
+
+
+def _console_preview(text: str, *, limit: int) -> tuple[str, bool]:
+    if len(text) <= limit:
+        return text, False
+    return text[:limit], True
 
 
 def _as_int(value: object) -> int:
