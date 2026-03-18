@@ -10,15 +10,13 @@ The original motivation was to create a way to modify existing CLI apps that use
 ## What?
 Also included in this repo is an evaluation harness designed to perform a cost-benefit analysis on LLM tool-use via naive cli `--help` queries vs the same usage, with the LLM given information about the CLI in a JSON object conforming to an OpenCLI schema. It takes the shape of a [CTF challenge](docs/llm-ctf-harness.md) with deterministic flags and meaningfully measurable outcomes. If you're only here for the current results, here's the general gist of it:
 
-### Cost adjustment impact
-
 | scope        | raw_verdict_no_cost                   | cost_adjusted_verdict                 | changed_by_cost | token_ratio_obs | token_ratio_threshold | reason |
 | ------------ | ------------------------------------- | ------------------------------------- | --------------- | --------------: | --------------------: | ------ |
 | gpt-4.1-mini | No net benefit currently              | No net benefit currently              | no              |           2.361 |                  1.75 | -      |
 | gpt-5-mini   | Net benefit now                       | Net benefit now                       | no              |           1.150 |                  1.75 | -      |
 | all-models   | Promising, strategy adjustment needed | Promising, strategy adjustment needed | no              |           1.608 |                  1.75 | -      |
 
-This table comes from the [generated CTF harness run report](ctf/results/confirmatory-decision.md).
+This table comes from the [generated CTF harness run report](ctf/results/confirmatory-decision.md#cost-adjustment-impact).
 
 ----
 
