@@ -4,10 +4,10 @@
 
 This repo is an early, practical v.0 focused on native parser introspection.
 
-## Why 
+## Why?
 The original motivation was to create a way to modify existing CLI apps that use argparse, with a simple one-line modification that would expose all of the argparsing behavior just as would be exposed with `--help`, but as a JSON object. After learning about OpenCLI, the implementation was modified to try adhere to the schema, in hopes that it would be useful for both `jelp` and OpenCLI schema draft by exposing any shortcomings in the draft, and validating the assumption that describing a CLI in this sort of manner is generally more effective than letting an LLM just discover usage via `--help` as a human user would.
 
-## What
+## What?
 Also included in this repo is an evaluation harness designed to perform a cost-benefit analysis on LLM tool-use via naive cli `--help` queries vs the same usage, with the LLM given information about the CLI in a JSON object conforming to an OpenCLI schema. It takes the shape of a [CTF challenge](docs/llm-ctf-harness.md) with deterministic flags and meaningfully measurable outcomes. If you're only here for the current results, here's the general gist of it:
 
 ### Cost adjustment impact
