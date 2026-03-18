@@ -17,6 +17,27 @@ Current `jelp` posture:
 - Preserve what `argparse` exposes in metadata when available.
 - Recommend first-class relationship fields upstream so tooling/LLMs do not infer behavior heuristically.
 
+## Defaults Representation
+
+Current Gap:
+
+- OpenCLI draft schema does not define first-class default fields on options/arguments.
+
+jelp posture:
+
+- represent defaults in metadata for now.
+- `argparse.default` is emitted in per-option/per-argument metadata when default is not `argparse.SUPPRESS`.
+
+## Repeatable Option Semantics
+
+Current Gap:
+- OpenCLI draft schema does not currently model repeat-count or additive-repeat option behavior as first-class semantics.
+
+jelp posture:
+- keep repeat semantics in metadata for v0.
+- `argparse.repeat_semantics` is emitted for `append`, `extend`, and `count`.
+
+
 ## Provenance / Confidence for Inferred Data
 
 Observed need:
@@ -26,7 +47,7 @@ Observed need:
 
 Current gap:
 
-- OpenCLI draft has no standardized provenance/confidence shape for inferred vs authoritative fields.
+- OpenCLI draft has no standardized provenance/confidence shape for inferred (man-made from docs, etc) vs authoritative fields.
 
 Current `jelp` posture:
 
