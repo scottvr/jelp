@@ -181,6 +181,7 @@ class DecisionReportPipelineTests(unittest.TestCase):
             Path(__file__).resolve().parents[1]
             / "ctf"
             / "results"
+            / "phase1"
             / "openai-gpt-4.1-mini-temp-0.2-primed-modes--steps-12_3runs.json"
         )
         if not fixture.exists():

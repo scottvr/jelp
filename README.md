@@ -147,13 +147,15 @@ See:
 - [docs/v0-decisions.md](docs/v0-decisions.md)
 - [docs/opencli-feedback-examples.md](docs/opencli-feedback-examples.md)
 - [docs/llm-ctf-harness.md](docs/llm-ctf-harness.md)
+- [docs/phase-2-protocol.md](docs/phase-2-protocol.md)
+- [docs/phase1/opencli-decision-protocol.md](docs/phase1/opencli-decision-protocol.md) (archived phase-1 protocol)
 - [docs/task-tracker.md](docs/task-tracker.md)
 - [docs/task-tracker-roadmap.md](docs/task-tracker-roadmap.md)
 
 Quick harness smoke test:
 
 ```bash
-PYTHONPATH=src:. .venv/bin/python ctf/harness.py --adapter oracle --out ctf/results/oracle.json
+PYTHONPATH=src:. .venv/bin/python ctf/harness.py --adapter oracle --out ctf/results/phase2/oracle.json
 ```
 
 ## Why this project exists

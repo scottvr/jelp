@@ -1,4 +1,4 @@
-# OpenCLI/jelp Cost-Adjusted Decision Protocol
+# OpenCLI/jelp Cost-Adjusted Decision Protocol (Archived Phase-1)
 
 This document freezes the evaluation protocol for the current decision pass.
 
@@ -42,6 +42,9 @@ pass, expected evidence paths are:
 
 - `ctf/results/confirmatory-gpt-4.1-mini.json`
 - `ctf/results/confirmatory-gpt-5-mini.json`
+- Archived location in this branch:
+  - `ctf/results/phase1/confirmatory-gpt-4.1-mini.json`
+  - `ctf/results/phase1/confirmatory-gpt-5-mini.json`
 
 No prior exploratory files (temperature sweeps, subset runs, or older mode
 mixes) are used for the final verdict.
@@ -100,7 +103,7 @@ PYTHONPATH=src:. .venv/bin/python ctf/harness.py \
   --api-timeout-s 45 \
   --response-max-output-tokens 1200 \
   --adapter-retries 2 \
-  --out ctf/results/confirmatory-gpt-4.1-mini.json
+  --out ctf/results/phase1/confirmatory-gpt-4.1-mini.json
 
 PYTHONPATH=src:. .venv/bin/python ctf/harness.py \
   --adapter openai \
@@ -111,22 +114,22 @@ PYTHONPATH=src:. .venv/bin/python ctf/harness.py \
   --api-timeout-s 45 \
   --response-max-output-tokens 1200 \
   --adapter-retries 2 \
-  --out ctf/results/confirmatory-gpt-5-mini.json
+  --out ctf/results/phase1/confirmatory-gpt-5-mini.json
 ```
 
 Run the decision analyzer:
 
 ```bash
 PYTHONPATH=src:. .venv/bin/python ctf/decision_report.py \
-  --in ctf/results/confirmatory-gpt-4.1-mini.json \
-  --in ctf/results/confirmatory-gpt-5-mini.json \
+  --in ctf/results/phase1/confirmatory-gpt-4.1-mini.json \
+  --in ctf/results/phase1/confirmatory-gpt-5-mini.json \
   --baseline help-only-primed \
   --candidate jelp-primed-useful \
   --ci-level 0.90 \
   --bootstrap-samples 4000 \
   --seed 42 \
-  --json-out ctf/results/confirmatory-decision.json \
-  --md-out ctf/results/confirmatory-decision.md
+  --json-out ctf/results/phase1/confirmatory-decision.json \
+  --md-out ctf/results/phase1/confirmatory-decision.md
 ```
 
 ## Assumptions

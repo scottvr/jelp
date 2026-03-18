@@ -2,6 +2,11 @@
 
 This harness evaluates whether machine-readable CLI introspection improves LLM tool use.
 
+Phase result layout:
+
+- archived phase-1 artifacts: `ctf/results/phase1/`
+- active phase-2 runs: `ctf/results/phase2/`
+
 ## Goal
 
 Measure task success and efficiency across core modes:
@@ -61,7 +66,7 @@ Detailed command/stdio traces are written to a JSON log.
 ### Oracle smoke test (deterministic)
 
 ```bash
-PYTHONPATH=src:. .venv/bin/python ctf/harness.py --adapter oracle --out ctf/results/oracle.json
+PYTHONPATH=src:. .venv/bin/python ctf/harness.py --adapter oracle --out ctf/results/phase2/oracle.json
 ```
 
 ### OpenAI-based naive LLM run
@@ -76,7 +81,7 @@ PYTHONPATH=src:. .venv/bin/python ctf/harness.py \
   --api-timeout-s 45 \
   --response-max-output-tokens 500 \
   --adapter-retries 1 \
-  --out ctf/results/openai-run.json
+  --out ctf/results/phase2/openai-run.json
 ```
 
 Low-memory variant (recommended for long benchmark sweeps):
@@ -88,7 +93,7 @@ PYTHONPATH=src:. .venv/bin/python ctf/harness.py \
   --iterations 3 \
   --max-steps 12 \
   --low-memory \
-  --out ctf/results/openai-run.json
+  --out ctf/results/phase2/openai-run.json
 ```
 
 Checkpointing behavior:
@@ -109,7 +114,8 @@ PYTHONPATH=src:. .venv/bin/python ctf/harness.py \
   --adapter openai \
   --modes help-only help-only-primed jelp-useful jelp-primed jelp-no-meta \
   --scenario fixture01_vault \
-  --scenario fixture08_nested
+  --scenario fixture08_nested \
+  --out ctf/results/phase2/openai-subset.json
 ```
 
 ### Primed jelp-only experiment
@@ -121,7 +127,7 @@ PYTHONPATH=src:. .venv/bin/python ctf/harness.py \
   --modes jelp-primed-useful jelp-primed-incremental jelp-primed-full \
   --iterations 3 \
   --max-steps 12 \
-  --out ctf/results/openai-primed-jelp-only.json
+  --out ctf/results/phase2/openai-primed-jelp-only.json
 ```
 
 ### Live debug mode
@@ -197,14 +203,14 @@ For GPT-5 family models that sometimes return empty or partial text, try:
 - Adapters: `ctf/adapters.py`
 - Scenarios: `ctf/scenarios.py`
 - Fixtures: `ctf/fixtures/*.py`
-- Results: `ctf/results/*.json`
+- Results: `ctf/results/phase2/*.json` (active), `ctf/results/phase1/*.json` (archive)
 
 ## Reporting
 
 After a harness run, compute mode-level and paired baseline deltas:
 
 ```bash
-PYTHONPATH=src:. .venv/bin/python ctf/report.py --in ctf/results/openai-run.json
+PYTHONPATH=src:. .venv/bin/python ctf/report.py --in ctf/results/phase2/openai-run.json
 ```
 
 Defaults:
@@ -216,7 +222,7 @@ Override comparisons:
 
 ```bash
 PYTHONPATH=src:. .venv/bin/python ctf/report.py \
-  --in ctf/results/openai-run.json \
+  --in ctf/results/phase2/openai-run.json \
   --baseline help-only \
   --compare jelp-useful \
   --compare jelp-primed \
@@ -230,18 +236,19 @@ For pre-registered decision analysis across one or more run logs:
 
 ```bash
 PYTHONPATH=src:. .venv/bin/python ctf/decision_report.py \
-  --in ctf/results/confirmatory-gpt-4.1-mini.json \
-  --in ctf/results/confirmatory-gpt-5-mini.json \
+  --in ctf/results/phase2/confirmatory-gpt-4.1-mini.json \
+  --in ctf/results/phase2/confirmatory-gpt-5-mini.json \
   --baseline help-only-primed \
   --candidate jelp-primed-useful \
   --ci-level 0.90 \
   --bootstrap-samples 4000 \
   --seed 42 \
-  --json-out ctf/results/confirmatory-decision.json \
-  --md-out ctf/results/confirmatory-decision.md
+  --json-out ctf/results/phase2/confirmatory-decision.json \
+  --md-out ctf/results/phase2/confirmatory-decision.md
 ```
 
-See `docs/opencli-decision-protocol.md` for locked thresholds and evidence rules.
+See `docs/phase-2-protocol.md` for phase-2 head-to-head protocol.
+For archived phase-1 protocol/rules, see `docs/phase1/opencli-decision-protocol.md`.
 
 ## Cost report (API spend estimate)
 
@@ -249,10 +256,10 @@ Estimate API spend from recorded token usage in run logs:
 
 ```bash
 PYTHONPATH=src:. .venv/bin/python ctf/cost_report.py \
-  --in ctf/results/confirmatory-gpt-4.1-mini.json \
-  --in ctf/results/confirmatory-gpt-5-mini.json \
+  --in ctf/results/phase2/confirmatory-gpt-4.1-mini.json \
+  --in ctf/results/phase2/confirmatory-gpt-5-mini.json \
   --forecast-iterations 3 \
-  --json-out ctf/results/confirmatory-cost.json
+  --json-out ctf/results/phase2/confirmatory-cost.json
 ```
 
 Optional adjustments:
