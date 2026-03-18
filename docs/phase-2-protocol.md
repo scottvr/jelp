@@ -64,7 +64,19 @@ Use `ctf/decision_report.py` as the decision surface and emphasize:
 
 ## Repro commands
 
-Head-to-head evidence (using defaults above):
+One-command runner (recommended):
+
+```bash
+PYTHONPATH=src:. .venv/bin/python ctf/phase2_run.py
+```
+
+`llm-ctf-bench.sh` is now a thin shim around this same command:
+
+```bash
+./llm-ctf-bench.sh
+```
+
+Manual equivalent (using defaults above):
 
 ```bash
 PYTHONPATH=src:. .venv/bin/python ctf/harness.py \
@@ -108,6 +120,13 @@ PYTHONPATH=src:. .venv/bin/python ctf/decision_report.py \
   --json-out ctf/results/phase2/head2head-decision.json \
   --md-out ctf/results/phase2/head2head-decision.md
 ```
+
+Useful runner flags:
+
+- `--no-debug` to reduce console volume
+- `--no-resume` for strict fresh runs (requires unique `--results-dir` or `--overwrite` style handling in harness outputs)
+- `--skip-decision-report` to run harness only
+- `--dry-run` to print commands without executing
 
 ## Next fixture expansion targets (after head-to-head)
 

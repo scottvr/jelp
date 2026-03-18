@@ -158,6 +158,12 @@ Quick harness smoke test:
 PYTHONPATH=src:. .venv/bin/python ctf/harness.py --adapter oracle --out ctf/results/phase2/oracle.json
 ```
 
+Phase-2 preset runner:
+
+```bash
+PYTHONPATH=src:. .venv/bin/python ctf/phase2_run.py
+```
+
 ## Why this project exists
 
 Many CLIs already contain high-quality structural truth in their parser definitions.

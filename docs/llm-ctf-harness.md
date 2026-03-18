@@ -63,6 +63,20 @@ Detailed command/stdio traces are written to a JSON log.
 
 ## Run
 
+### Phase-2 preset runner
+
+For the current phase-2 head-to-head workflow, use:
+
+```bash
+PYTHONPATH=src:. .venv/bin/python ctf/phase2_run.py
+```
+
+Compatibility shim:
+
+```bash
+./llm-ctf-bench.sh
+```
+
 ### Oracle smoke test (deterministic)
 
 ```bash
