@@ -2,7 +2,11 @@
 
 This harness evaluates whether machine-readable CLI introspection improves LLM tool use.
 
-**NOTE:** the community would likely benefit from more iterations, more model variance (I've only tested two; one actually suffered in performance when made to use an open-cli schema to learn about a new tool, one saw some improvement at the cost of increased token usage, and so on.)  More tests, more comparisons, more knowledge. I find it interesting that my current results indicate that some models, under specific constraints will perform better in terms of how many tries it takes them to get a command from a cli not in their training data, but worse in how many mistakes they made in the process before getting it right vs any of the other dimensions examined. Read on, and maybe post in the Discussions if you have reports or data to contribute (presently the logs are in .gitignore, so don't try to send a PR for this. If there is interest we can work out a system for distrubuted contribution to the benchmarking effort.)
+**NOTE:** the community would likely benefit from more iterations, more model variance (I've only tested two; one actually suffered in performance when made to use an open-cli schema to learn about a new tool, one saw some improvement at the cost of increased token usage, and so on.)  More tests, more comparisons, more knowledge. 
+
+I find it interesting that my current results indicate that some models, under specific constraints will perform better in terms of how many tries it takes them to get a command from a cli not in their training data, but worse in how many mistakes they made in the process before getting it right vs any of the other dimensions examined. 
+
+Read on, and maybe post in the Discussions if you have reports or data to contribute (presently the logs are in .gitignore, so don't try to send a PR for this. If there is interest we can work out a system for distrubuted contribution to the benchmarking effort.)
 
 ## Goal
 
