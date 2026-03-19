@@ -2,6 +2,8 @@
 
 This harness evaluates whether machine-readable CLI introspection improves LLM tool use.
 
+**NOTE:** the community would likely benefit from more iterations, more model variance (I've only tested two; one actually suffered in performance when made to use an open-cli schema to learn about a new tool, one saw some improvement at the cost of increased token usage, and so on.)  More tests, more comparisons, more knowledge. I find it interesting that my current results indicate that some models, under specific constraints will perform better in terms of how many tries it takes them to get a command from a cli not in their training data, but worse in how many mistakes they made in the process before getting it right vs any of the other dimensions examined. Read on, and maybe post in the Discussions if you have reports or data to contribute (presently the logs are in .gitignore, so don't try to send a PR for this. If there is interest we can work out a system for distrubuted contribution to the benchmarking effort.)
+
 ## Goal
 
 Measure task success and efficiency across core modes:
@@ -37,7 +39,9 @@ Optional control mode: `help-only-primed`:
 ## Scenario set
 
 Fixtures live in `ctf/fixtures/` and are intentionally unfamiliar CLIs. Each has a hidden success condition that prints one deterministic `FLAG{...}`.
-Fixtures include realistic decoy commands and root/subcommand coupling so interface exploration is rewarded over blind guessing.
+Fixtures include realistic decoy commands and root/subcommand coupling so interface exploration is rewarded over blind guessing. 
+
+**Note:** A later phase will include the same trials, but using CLIs that are well-documented in the training corpora. It seems a useful control, but for now I wanted to ensure that the CLIs under test were guaranteed *not* to be in the LLM training data, so that we could confine the changes being tested to only whether the usage data is presented in human-readable help text, or schema'd json
 
 Current fixture count: 8.
 
